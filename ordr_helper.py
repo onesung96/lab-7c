@@ -11,7 +11,7 @@
 import ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.2.0'
+VERSION = '1.2.1'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -475,10 +475,14 @@ def overlay():
     def poll():
         try:
             s = json.loads(urllib.request.urlopen(f'http://127.0.0.1:{PORT}/summary', timeout=2).read())
+            flags['fail'] = 0
             if not s.get('stats'):
                 s['status'] = s.get('status', '') + ' (도우미 페이지를 열어 두세요)'
         except Exception:
             s = {'status': '프로그램 연결 안 됨'}
+            flags['fail'] = flags.get('fail', 0) + 1
+            if flags['fail'] >= 8:   # 본 프로그램이 꺼지면 작은 창도 같이 닫힌다
+                root.destroy(); return
         ready = {n for g in s.get('grades', []) for n in g.get('ready', [])} | set(s.get('ready', []))
         if last['s']:
             for n in ready - last['ready']:
