@@ -1,0 +1,778 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>원랜디 도우미</title>
+<style>
+:root { --bg:#12141a; --card:#1b1e25; --card2:#20242c; --line:#2a2f38; --fg:#e8eaf0; --dim:#8a92a0; --mute:#555c68;
+        --ok:#4cc38a; --warn:#f0b43c; --bad:#ef5b5b; --acc:#6aa8ff; --gold:#ffd166 }
+* { box-sizing:border-box }
+[hidden] { display:none !important }   /* .strip 의 display:flex 가 hidden 을 덮지 않게 */
+body { margin:0; background:var(--bg); color:var(--fg); font:13px/1.45 "Malgun Gothic", system-ui, sans-serif }
+button, input, select { font:inherit; color:inherit }
+.dim { color:var(--dim) } .ok { color:var(--ok) } .warn { color:var(--warn) } .bad { color:var(--bad) }
+
+/* header */
+header { position:sticky; top:0; z-index:20; display:flex; flex-wrap:wrap; gap:10px; align-items:center; padding:8px 12px; background:#0e1015ee; border-bottom:1px solid var(--line); backdrop-filter:blur(4px) }
+header h1 { font-size:15px; margin:0 4px 0 0; white-space:nowrap }
+.pill { padding:1px 10px; border-radius:99px; border:1px solid var(--line); color:var(--dim); white-space:nowrap }
+.pill.on { color:var(--ok); border-color:#2f6b50 }
+select, input[type=text], input[type=number] { background:var(--card); border:1px solid var(--line); border-radius:6px; padding:3px 7px }
+input[type=number] { width:70px }
+.seg { display:inline-flex } .seg button { background:var(--card); color:var(--dim); border:1px solid var(--line); padding:2px 10px; cursor:pointer; margin-left:-1px }
+.seg button:first-child { border-radius:6px 0 0 6px; margin-left:0 } .seg button:last-child { border-radius:0 6px 6px 0 }
+.seg button.on { color:#fff; background:#3b6fc4; border-color:#3b6fc4 }
+.ibtn { background:var(--card); border:1px solid var(--line); border-radius:6px; padding:2px 9px; cursor:pointer; color:var(--dim) }
+.ibtn:hover { color:var(--fg) }
+#q { width:170px } .spacer { flex:1 }
+
+/* summary: stat bars + warnings */
+#summary { display:flex; flex-wrap:wrap; gap:8px 18px; align-items:center; padding:8px 12px 0 }
+.sb { width:170px } .sb .top { display:flex; justify-content:space-between; font-size:12px }
+.sb .track { height:6px; background:#0b0d11; border-radius:3px; overflow:hidden; margin-top:2px } .sb .fill { height:100% }
+.chip { display:inline-block; padding:1px 8px; border-radius:99px; font-size:12px; background:#2a1f1f; color:#ffb4b4 }
+.chip.w { background:#2e2818; color:#f5d08a } .chip.g { background:#16291f; color:#8fe0b5 }
+.extra { font-size:12px; color:var(--dim) }
+
+/* strips */
+.strip { margin:8px 12px 0; padding:6px 10px; border-radius:8px; font-size:12px; display:flex; flex-wrap:wrap; gap:5px 14px; align-items:center }
+#plan { background:#231d10; border:1px solid #5a4717 } #plan .it b { color:var(--gold) } .arrow { color:var(--dim) }
+#recbar { display:grid; grid-template-columns:repeat(auto-fill, minmax(240px, 1fr)); gap:8px; padding:0; background:none; border:0 }
+.rc { background:#18202e; border:1px solid #29385a; border-radius:9px; padding:7px 10px 6px; cursor:pointer; min-width:0 }
+.rc:hover { border-color:var(--acc) }
+.rc .r1 { display:flex; align-items:center; gap:6px } .rc .r1 img { width:22px; height:22px; border-radius:3px }
+.rc .rn { font-size:14px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0 }
+.rc .rg { font-size:12px; white-space:nowrap } .rc .rs { margin-left:auto; font-size:13px; white-space:nowrap }
+.rc .r2 { margin:5px 0 4px; display:flex; flex-wrap:wrap; gap:4px }
+.bd { font-size:12px; padding:1px 7px; border-radius:5px; background:#173427; color:#8fe0b5; font-weight:600 } .bd.neg { background:#3a1d1d; color:#ffa3a3 }
+.rbar { height:4px; background:#0b0d11; border-radius:2px; overflow:hidden } .rbar div { height:100%; background:var(--acc) }
+.rc .r0 { margin-top:4px; font-size:12px; color:var(--gold) }
+.rc .r3 { margin-top:4px; font-size:11.5px; color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis } #pins { background:#241f14; border:1px solid #4a3d1c }
+.strip b { font-size:12px } .strip .it { cursor:pointer } .strip .it:hover { color:var(--acc) }
+.star { color:var(--gold) } .pin { color:#ffb86b }
+
+/* toolbar + grid */
+#toolbar { display:flex; flex-wrap:wrap; gap:10px 14px; align-items:center; padding:8px 12px 0; font-size:12px; color:var(--dim) }
+#grid { display:flex; gap:10px; align-items:flex-start; padding:8px 12px 20px }
+.gcol { flex:1 1 0; min-width:0 }
+.grp { margin-bottom:10px; border-radius:5px; overflow:hidden; background:var(--card) }
+.gh { display:flex; justify-content:space-between; padding:3px 7px; font-size:12px; font-weight:700; background:var(--card2); border-left:3px solid var(--gc); border-radius:4px 4px 0 0; color:var(--gc) }
+.gh span { color:var(--dim); font-weight:400 }
+.cell { position:relative; display:flex; align-items:center; gap:4px; height:19px; padding:0 4px 0 5px; background:var(--card); border-bottom:1px solid #1f232a }
+.cell .pg { position:absolute; left:0; top:0; bottom:0; background:rgba(106,168,255,.15); pointer-events:none }
+.cell img { width:15px; height:15px; border-radius:2px; flex:none; position:relative }
+.cell .nm { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:12px; position:relative }
+.cell .pc { font-size:11px; color:#7d8594; position:relative; min-width:30px; text-align:right }
+.cell .pc.hi { color:var(--warn) } .cell .pc.full { color:var(--ok); font-weight:700 }
+.cell .ct { min-width:14px; text-align:right; font-weight:700; font-size:12px; color:var(--acc); position:relative }
+.cell .q { flex:none; width:15px; height:15px; border-radius:50%; border:1px solid #4a5160; color:#9aa3b2; background:none; font:10px/13px sans-serif; padding:0; cursor:pointer; position:relative }
+.cell .q:hover { border-color:var(--acc); color:var(--acc) }
+.cell.have { background:#1e2633 } .cell.ready { box-shadow:inset 3px 0 0 var(--ok) } .cell.ready .nm { color:var(--ok) }
+.cell.divider { justify-content:center; font-size:11px; color:var(--dim); background:#161920; height:15px }
+.cell.memo { font-size:11px; color:var(--warn) }
+.cell.fold { justify-content:center; font-size:11px; color:var(--dim); cursor:pointer; background:#161920 } .cell.fold:hover { color:var(--acc) }
+.cell.flash { animation:flash 1.4s ease-out 2 }
+@keyframes flash { 0% { background:#3d5a2a } 100% { background:var(--card) } }
+mark { background:#5a4a14; color:inherit; border-radius:2px }
+
+/* modal */
+.ov { position:fixed; inset:0; z-index:50; background:rgba(0,0,0,.55); display:flex; align-items:flex-start; justify-content:center; padding:56px 14px }
+.ov[hidden] { display:none }
+.box { width:min(660px, 100%); max-height:calc(100vh - 90px); overflow:auto; background:var(--card); border:1px solid var(--line); border-radius:12px }
+.box .mh { display:flex; align-items:center; gap:8px; padding:11px 14px; border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--card); z-index:1 }
+.box .mh b { flex:1; font-size:15px }
+.sec { padding:10px 14px; border-bottom:1px solid var(--line) } .sec:last-child { border-bottom:0 }
+.sec h4 { margin:0 0 8px; font-size:12px; color:var(--dim); font-weight:600 }
+.mats { display:flex; flex-wrap:wrap; gap:8px; justify-content:center }
+.mat { width:108px; text-align:center; cursor:pointer; padding:6px 4px; border-radius:8px; border:1px solid transparent; font-size:12px; line-height:1.35 }
+.mat:hover { border-color:var(--acc); background:#232833 }
+.mat img { width:40px; height:40px; border-radius:4px; display:block; margin:0 auto 4px }
+.mat .hv { font-weight:700 } .mat.ok .hv { color:var(--ok) } .mat.no .hv { color:var(--bad) } .mat .g { font-size:11px }
+ol.steps { margin:0; padding-left:22px } ol.steps li { padding:2px 0 } ol.steps li.last { color:var(--ok); font-weight:700 }
+.set td { padding:4px 8px } .set th { text-align:left; padding:4px 8px; color:var(--dim); font-weight:600 }
+
+/* toasts */
+#toasts { position:fixed; right:14px; bottom:14px; z-index:60; display:flex; flex-direction:column; gap:6px; align-items:flex-end; pointer-events:none }
+.toast { background:#232a36; border:1px solid #34405a; border-left:3px solid var(--acc); padding:6px 12px; border-radius:8px; font-size:13px; box-shadow:0 4px 14px rgba(0,0,0,.35); animation:tin .2s ease-out }
+.toast.ok { border-left-color:var(--ok) } @keyframes tin { from { transform:translateY(8px); opacity:0 } }
+
+/* mini (second monitor / phone): no grid, big text */
+body.mini #toolbar, body.mini #grid, body.mini .full-only { display:none !important }
+body.mini { font-size:14px } body.mini .sb { width:100% } body.mini #summary { display:block } body.mini .sb { margin-bottom:6px }
+body.mini #pins { display:block } body.mini #pins .it { display:block; padding:3px 0 } body.mini #recbar { grid-template-columns:1fr }
+#minilist { display:none } body.mini #minilist { display:block; margin:8px 12px }
+</style>
+</head>
+<body>
+<header>
+  <h1>원랜디 도우미</h1>
+  <span id="st" class="pill">연결 중…</span>
+  <select id="owner" title="내 슬롯"></select>
+  <span class="seg" id="mode"><button data-m="자동">자동</button><button data-m="물딜">물딜</button><button data-m="마딜">마딜</button></span>
+  <a id="upd" class="pill" style="display:none;color:var(--gold);border-color:#6b5520;text-decoration:none" target="_blank"></a>
+  <input id="q" type="text" class="full-only" placeholder="검색 (초성 OK, / 키)">
+  <span class="spacer"></span>
+  <button class="ibtn full-only" id="openOverlay" title="게임 화면 위에 항상 떠 있는 작은 창 (창 모드/전체 창 모드에서만 보여요)">게임 위에 띄우기</button>
+  <button class="ibtn full-only" id="openMini" title="작은 창으로 띄워 두기(두 번째 모니터용)">작게 보기</button>
+  <button class="ibtn" id="openSet" title="설정">⚙</button>
+</header>
+<div id="summary"></div>
+<div id="plan" class="strip" hidden></div>
+<div id="pins" class="strip" hidden></div>
+<div id="recbar" class="strip"></div>
+<div id="minilist"></div>
+<div id="toolbar">
+  <span>접기 <span class="seg" id="gfilter"><button data-f="0">안 접음</button><button data-f="30">30%↓</button><button data-f="50">50%↓</button><button data-f="70">70%↓</button></span></span>
+  <span class="seg" id="gsort"><button data-s="pct">진행률순</button><button data-s="orig">sions 순서</button></span>
+  <span><b class="ok">가능</b> 지금 바로 · <b class="warn">N단계</b> 중간 조합 N번 · <b>%</b> 하위 재료까지 진행률(위습 제외) · <span class="star">★</span> 추천 · <span class="pin">📌</span> 찜 · <b>?</b> 조합식</span>
+</div>
+<div id="grid"></div>
+<div id="modal" class="ov" hidden><div class="box" id="mbox"></div></div>
+<div id="settings" class="ov" hidden><div class="box" id="sbox"></div></div>
+<div id="toasts"></div>
+<script>
+// ───────── 설정값 ─────────
+// 목표치 기본값: sions 도우미 메모(풀이감 107%, 신풀깍 201) + 커뮤니티 공략(물딜 스턴 1~1.5, 마딜 1.5~2 / 이감 70~90)
+const DEFAULTS = { 물딜: { 이감: 107, 방깍: 201, 스턴: 1.5, 보잡: 1 }, 마딜: { 이감: 90, 방깍: 0, 스턴: 2, 보잡: 1 } };
+const CHECK = ['이감', '방깍', '스턴', '보잡'];
+const STATS = ['이감', '방깍', '스턴', '보잡', '마방깍', '공증', '공속', '마젠', '마증', '추가방깍'];
+const RANK = ['흔함', '안흔함', '특별함', '희귀함', '전설', '히든', '초월함', '제한됨', '불멸의', '영원함', '신비함', '왜곡', '변화', '세라핌', '랜덤유닛', '조합 아이템', '기타'];
+// 게임 속 등급 색 (맵 파일의 |cff 색 코드)
+const GCOLOR = { 흔함: '#4fd65a', 안흔함: '#a47ef2', 특별함: '#3f94ff', 희귀함: '#f062f0', 전설: '#ff5555', 히든: '#7d86ff', 초월함: '#00fa9a',
+  제한됨: '#df9d30', 불멸의: '#e0525a', 영원함: '#c15af4', 신비함: '#51ddf5', 왜곡: '#9fefd1', 변화: '#ff7039', 세라핌: '#00ced1', 랜덤유닛: '#51ddf5' };
+const THUMB = 'https://sions.kr/data/file/mk_helper_thumb/';
+const MINI = new URLSearchParams(location.search).has('mini');
+const REC_FROM = RANK.indexOf('전설'), REC_TO = RANK.indexOf('랜덤유닛');   // 추천은 전설·히든 ~ 세라핌만
+
+const $ = id => document.getElementById(id);
+const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+const store = { get(k, d) { try { return JSON.parse(localStorage.getItem('ordr.' + k)) ?? d } catch { return d } },
+                set(k, v) { try { localStorage.setItem('ordr.' + k, JSON.stringify(v)) } catch {} } };
+const gcolor = name => GCOLOR[Object.keys(GCOLOR).find(k => name.startsWith(k))] || '#8a92a0';
+
+let items = {}, order = [], groups = [], usedIn = {};
+let counts = {}, avail = {}, pinRes = {}, recIds = new Set(), recList = [];
+let modePref = store.get('modePref', '자동'), mode = '물딜';   // 자동 = 가진 전설 이상 유닛의 물뎀/마뎀 비율로
+const savedT = store.get('targets', {});
+let targets = { 물딜: { ...DEFAULTS.물딜, ...savedT.물딜 }, 마딜: { ...DEFAULTS.마딜, ...savedT.마딜 } };
+let pins = new Set(store.get('pins', []));
+let gfilter = +store.get('gfilter', 50) || 0, gsort = store.get('gsort', 'pct'), notify = store.get('notify', true);
+let openGroups = new Set(), query = '', prevCounts = null, prevReady = null, prevBoss = null, flash = {};
+let sound = store.get('sound', true), auraOnce = store.get('auraOnce', true), selWisp = store.get('selWisp', false);
+let tone = store.get('tone', '띵'), vol = store.get('vol', 60), osNotify = store.get('osNotify', false), prevStats = null;
+const WISPS = { '-1': '흔함선택위습', '-2': '안흔함위습', '-3': '특별위습', '-4': '희귀위습', '-5': '초월위습' };
+
+// ───────── 이름에서 수치 읽기 ─────────
+// "드래곤 0.9스턴, ●이감10, 깍10, 공속5, 공증25" / ● 는 같은 유닛 여러 마리여도 한 번만(오라로 봄), 나머지는 마리 수만큼
+function parse(name) {
+  const once = {}, each = {};
+  const add = (o, k, v) => { o[k] = (o[k] || 0) + v };
+  for (const m of name.matchAll(/(●?)(?:발동|발)?(?<!맵|적)이감\s*(\d+)/g)) add(m[1] ? once : each, '이감', +m[2]);
+  for (const m of name.matchAll(/(마방|맵|보스)?(?:방)?(?:깍|깎)\s*\(?(\d+)/g)) {
+    if (m[1] === '마방') add(each, '마방깍', +m[2]); else if (!m[1]) add(each, '방깍', +m[2]);
+  }
+  const st = name.match(/(\d+(?:\.\d+)?)\s*(?:단일)?스턴/) || name.match(/스턴\s*(\d+\.\d+)/);
+  if (st) add(each, '스턴', +st[1]);
+  if (/보잡|보스/.test(name)) add(each, '보잡', 1);   // 보스잡기: 광보잡, 보스현퍼, 보스깍, 보스&광폭 …
+  for (const [k, re] of [['공증', /공증\s*(\d+)/], ['공속', /공속\s*(\d+)/], ['마젠', /마젠\s*(\d+(?:\.\d+)?)/], ['마증', /마(?:뎀)?증\s*(\d+)/]]) {
+    const m = name.match(re); if (m) add(each, k, +m[1]);
+  }
+  return { once, each };
+}
+const short = n => n.split(/[,(:]/)[0].replace(/\s*(●|\d|발동|마방깍|방깍|방깎|깍|깎|광보잡|보잡|단일|공증|공속|마젠|이감|변이).*$/, '').trim() || n.slice(0, 10);
+const nm = id => items[id] ? short(items[id].name) : '?';
+
+// 초성 검색: "ㅈㅂ" -> 징베
+const CHO = 'ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ';
+const cho = s => [...s].map(c => { const k = c.charCodeAt(0) - 0xAC00; return k >= 0 && k < 11172 ? CHO[Math.floor(k / 588)] : c }).join('');
+const matches = name => { if (!query) return true; const n = name.toLowerCase().replace(/\s/g, ''), q = query.toLowerCase().replace(/\s/g, '');
+  if (n.includes(q)) return true;
+  if (!/^[ㄱ-ㅎ]+$/.test(q)) return false;
+  const words = short(name).split(/\s+/);   // 초성은 설명 빼고 이름만, 단어 첫머리부터: "ㅈㅂ" -> 징베 (엘리자베스 X)
+  return cho(words.join('')).startsWith(q) || words.some(w => cho(w).startsWith(q)); };
+
+// ───────── 계산 ─────────
+function statsOf(cnt) {
+  const t = Object.fromEntries(STATS.map(k => [k, 0]));
+  for (const [id, n] of Object.entries(cnt)) {
+    const it = items[id]; if (!it || n <= 0) continue;
+    for (const [k, v] of Object.entries(it.stat.once)) t[k] += auraOnce ? v : v * n;
+    for (const [k, v] of Object.entries(it.stat.each)) t[k] += v * n;
+  }
+  return t;
+}
+const missingFor = (it, pool = avail) => it.recipes.filter(([m, k]) => (pool[m] || 0) < k).map(([m, k]) => [m, k - (pool[m] || 0)]);
+const canCraft = (it, pool = avail) => it.recipes.length && !it.lowest && !missingFor(it, pool).length;
+
+const bsCache = {};
+function buildScore(id, depth = 0) {      // 최하위(흔함) 몇 마리짜리인지
+  if (bsCache[id] != null) return bsCache[id];
+  const it = items[id];
+  if (!it || !it.recipes.length || it.lowest || depth > 15) return 1;
+  let s = 0;
+  for (const [m, k] of it.recipes) s += buildScore(m, depth + 1) * k;
+  return bsCache[id] = s || 1;
+}
+// sions PreBuild 방식: 재료가 없으면 재료의 재료로 내려간다. pool 에서 실제로 꺼내 쓴다(찜 예약에 씀).
+// 흔함은 최하위: 랜덤위습은 원하는 흔함을 못 골라서 대신 쓰면 %가 부풀려진다.
+function simulate(id, pool) {
+  const miss = {}, seq = [], wild = {};
+  let steps = 0;
+  function take(mid, depth) {
+    if ((pool[mid] || 0) > 0) { pool[mid]--; return buildScore(mid); }
+    const it = items[mid];
+    if (it && it.lowest && selWisp && (pool[-1] || 0) > 0) { pool[-1]--; wild[mid] = (wild[mid] || 0) + 1; return 1; }   // 흔함선택위습 = 원하는 흔함
+    if (!it || !it.recipes.length || it.lowest || depth > 15) { miss[mid] = (miss[mid] || 0) + 1; return 0; }
+    let s = 0;
+    for (const [m, k] of it.recipes) for (let i = 0; i < k; i++) s += take(m, depth + 1);
+    if (s) steps++;
+    if (s === buildScore(mid)) seq.push(mid);        // 이 중간 유닛은 다 모였음 -> 조합 순서에 추가
+    return s;
+  }
+  let got = 0;
+  for (const [m, k] of items[id].recipes) for (let i = 0; i < k; i++) got += take(m, 1);
+  return { pct: got / buildScore(id), miss, steps, seq, wild };
+}
+const progress = (id, base = avail) => pins.has(id) && pinRes[id] ? pinRes[id] : simulate(id, { ...base });
+
+function afterCraft(it) {
+  const c = { ...counts };
+  for (const [m, k] of it.recipes) c[m] = Math.max(0, (c[m] || 0) - k);
+  c[it.id] = (c[it.id] || 0) + 1;
+  return c;
+}
+function score(it, cur) {
+  const t = targets[mode], next = statsOf(afterCraft(it));
+  let s = 0; const why = [], gains = [];
+  for (const k of CHECK) {
+    if (!t[k]) continue;
+    const d = Math.min(next[k], t[k]) - Math.min(cur[k], t[k]);
+    s += d / t[k] * 3;
+    if (Math.abs(d) > 0.001) gains.push([k, +d.toFixed(2)]);
+    if (d > 0.001) why.push(`${k} +${+d.toFixed(2)}`);
+    else if (d < -0.001) why.push(`<span class="bad">${k} ${+d.toFixed(2)}</span>`);
+  }
+  const want = mode === '물딜' ? '물뎀' : '마뎀';
+  if (it.cat === want || it.cat === '하이브리드') s += 0.35;
+  return { s, why, gains, stat: gains.some(([, d]) => d > 0) };
+}
+
+// ───────── 그리기 ─────────
+const lackText = miss => Object.entries(miss).map(([m, k]) => nm(+m) + (k > 1 ? '×' + k : '')).join(', ');
+const stepLabel = pr => pr.steps ? pr.steps + '단계' : '위습으로';   // 100%인데 중간 조합 0번 = 흔함선택위습으로 채움
+const stateText = x => x.ready ? '<span class="ok">바로 가능</span>' : x.pr.pct >= 1 ? `<span class="warn">${stepLabel(x.pr)}</span>`
+  : `<span class="warn">${Math.round(x.pr.pct * 100)}%</span> <span class="dim">부족: ${esc(lackText(x.pr.miss))}</span>`;
+// 7: 가진 전설 이상 유닛의 물뎀·마뎀 비율로 모드 결정 (높은 등급일수록 무겁게)
+function autoMode() {
+  let phys = 0, mag = 0;
+  for (const [id, n] of Object.entries(counts)) {
+    const it = items[id]; if (!it || it.rank < REC_FROM || it.rank >= REC_TO) continue;
+    const w = n * (it.rank - REC_FROM + 1);
+    if (it.cat === '물뎀') phys += w; else if (it.cat === '마뎀') mag += w; else if (it.cat === '하이브리드') { phys += w / 2; mag += w / 2; }
+  }
+  return mag > phys * 1.2 ? '마딜' : '물딜';
+}
+// 9: 부족한 게 흔함뿐이면, 랜덤위습 몇 개를 더 뽑아야 되는지 (흔함 종류마다 같은 확률로 나온다고 보고 모의 뽑기)
+const wispCache = {};
+function wispsNeeded(miss) {
+  const need = Object.entries(miss).map(([m, k]) => [+m, k]);
+  if (!need.length || need.some(([m]) => !items[m] || !items[m].lowest || m === 0)) return null;
+  const key = JSON.stringify(need);
+  if (wispCache[key]) return wispCache[key];
+  const kinds = order.filter(id => items[id].lowest && +id !== 0);
+  let total = 0;
+  for (let t = 0; t < 800; t++) {
+    const left = Object.fromEntries(need); let rest = need.reduce((a, [, k]) => a + k, 0), n = 0;
+    while (rest > 0 && n < 500) { n++; const d = kinds[Math.floor(Math.random() * kinds.length)]; if (left[d] > 0) { left[d]--; rest--; } }
+    total += n;
+  }
+  return wispCache[key] = Math.round(total / 800);
+}
+const wildText = pr => Object.keys(pr.wild || {}).length ? '선택위습으로 고를 것: ' + lackText(pr.wild) : '';
+// 13: 추천 이유 한 줄
+function recReason(x, cur) {
+  const t = targets[mode], g = Object.fromEntries(x.gains);
+  let why;
+  if (g.보잡 > 0 && cur.보잡 < 1) why = '보스잡기 유닛이 없어서 우선';
+  else {
+    const best = CHECK.filter(k => g[k] > 0 && t[k]).sort((a, b) => g[b] / t[b] - g[a] / t[a])[0];
+    why = best ? `${best} ${+(t[best] - cur[best]).toFixed(2)} 부족 중 ${g[best]} 채움` : '';
+    if (best && cur[best] + g[best] >= t[best]) why += ' → 목표 달성';
+  }
+  if (x.it.cat && (x.it.cat === (mode === '물딜' ? '물뎀' : '마뎀') || x.it.cat === '하이브리드')) why += ` · ${x.it.cat}`;
+  return why;
+}
+function makePlan(cur) {
+  const t = targets[mode], reserved = {};
+  for (const id in counts) { const r = (counts[id] || 0) - (avail[id] || 0); if (r > 0) reserved[id] = r; }
+  const gainOf = (a, b) => CHECK.reduce((s, k) => s + (t[k] ? (Math.min(b[k], t[k]) - Math.min(a[k], t[k])) / t[k] : 0), 0);
+  let pool = { ...avail }, made = {}, stats = cur;
+  const steps = [];
+  for (let n = 0; n < 4; n++) {
+    let best = null;
+    for (const id of order) {
+      const it = items[id];
+      if (!it.recipes.length || it.lowest || it.rank < REC_FROM || it.rank >= REC_TO) continue;
+      const p = { ...pool }, sim = simulate(id, p);
+      if (sim.pct < 1) continue;
+      const units = { ...p };
+      for (const [k, v] of Object.entries(reserved)) units[k] = (units[k] || 0) + v;
+      for (const [k, v] of Object.entries({ ...made, [id]: (made[id] || 0) + 1 })) units[k] = (units[k] || 0) + v;
+      const after = statsOf(units), g = gainOf(stats, after) - sim.steps * 0.01;
+      if (g > 0.001 && (!best || g > best.g)) best = { id, sim, p, after, g };
+    }
+    if (!best) break;
+    steps.push(best); pool = best.p; made[best.id] = (made[best.id] || 0) + 1; stats = best.after;
+  }
+  return { steps, after: stats };
+}
+
+// 게임 위 작은 창·판 기록용 요약을 서버에 보낸다 (바뀔 때만)
+let lastSummary = '', lastPostAt = 0;
+function postSummary(warns, plan) {
+  const text = h => h.replace(/<[^>]+>/g, '');
+  const cur = statsOf(counts), t = targets[mode];
+  const st = x => x.ready ? '바로 가능' : x.pr.pct >= 1 ? stepLabel(x.pr) : Math.round(x.pr.pct * 100) + '%';
+  const top = order.filter(id => counts[id] && items[id].rank >= REC_FROM && items[id].rank < REC_TO).map(id => nm(id) + (counts[id] > 1 ? '×' + counts[id] : ''));
+  // 등급별: 보유 / 지금 가능 / 가까운 것(50%↑ 또는 N단계)
+  const grades = [];
+  for (const g of groups) {
+    const have = [], ready = [], near = [];
+    for (const raw of g.items) {
+      const it = items[raw.id]; if (!it) continue;
+      if (counts[it.id]) have.push(nm(it.id) + ' ' + counts[it.id]);
+      if (!it.recipes.length || it.lowest) continue;
+      if (canCraft(it)) { ready.push(nm(it.id)); continue; }
+      const pr = progress(it.id);
+      if (pr.pct >= 0.5) near.push([pr.pct, pr.pct >= 1 ? nm(it.id) + ' ' + stepLabel(pr) : nm(it.id) + ' ' + Math.round(pr.pct * 100) + '%']);
+    }
+    near.sort((x, y) => y[0] - x[0]);
+    if (have.length || ready.length || near.length)
+      grades.push({ g: g.name.split(' ')[0], gc: gcolor(g.name), have, ready, near: near.slice(0, 6).map(x => x[1]) });
+  }
+  const sm = {
+    mode, stats: CHECK.filter(k => t[k]).map(k => [k, +cur[k].toFixed(2), t[k]]),
+    warns: warns.map(text),
+    plan: plan.steps.length ? { steps: plan.steps.map(x => nm(x.id)).join(' → '),
+      result: CHECK.filter(k => t[k] && plan.after[k] !== cur[k]).map(k => `${k} ${+cur[k].toFixed(2)}→${+plan.after[k].toFixed(2)}`).join(' · ') } : null,
+    recs: recList.slice(0, 6).map(x => ({ n: short(x.it.name), g: x.it.grade.split(' ')[0], gc: gcolor(x.it.grade), st: st(x),
+      gains: x.gains.map(([k, d]) => `${k}${d > 0 ? '+' : ''}${d}`).join(' '), lack: x.ready || x.pr.pct >= 1 ? wildText(x.pr) : lackText(x.pr.miss), why: x.reason })),
+    pins: [...pins].filter(id => items[id]).map(id => ({ n: nm(id), st: st({ it: items[id], pr: pinRes[id], ready: canCraft(items[id], counts) }) })),
+    ready: order.filter(id => canCraft(items[id]) && items[id].rank >= REC_FROM && items[id].rank < REC_TO).map(nm),
+    grades, top, units: Object.keys(counts).filter(k => +k >= 0 && counts[k]).length };
+  const js = JSON.stringify(sm);
+  if (js !== lastSummary) { lastSummary = js; lastPostAt = Date.now(); fetch('/summary', { method: 'POST', body: js }).catch(() => {}); }
+}
+
+// 추천 카드: 이름 / 등급 · 채워 주는 스탯 배지 / 진행률 막대 / 부족한 재료
+function recCard(x) {
+  const pc = Math.round(Math.min(x.pr.pct, 1) * 100), lack = lackText(x.pr.miss);
+  const st = x.ready ? '<b class="ok">바로 가능</b>' : x.pr.pct >= 1 ? `<b class="warn">${stepLabel(x.pr)}</b>` : `<b>${pc}%</b>`;
+  return `<div class="rc it" data-id="${x.it.id}" title="${esc(x.it.name)}${lack ? '\n부족: ' + esc(lack) : ''}">` +
+    `<div class="r1">${imgTag(x.it)}<span class="rn"><span class="star">★</span> ${esc(short(x.it.name))}</span><span class="rg" style="color:${gcolor(x.it.grade)}">${esc(x.it.grade.split(' ')[0])}</span><span class="rs">${st}</span></div>` +
+    `<div class="r2">${x.gains.map(([k, d]) => `<span class="bd${d < 0 ? ' neg' : ''}">${k} ${d > 0 ? '+' : ''}${d}</span>`).join('')}</div>` +
+    `<div class="rbar"><div style="width:${pc}%"></div></div>` +
+    (x.reason ? `<div class="r0">💡 ${esc(x.reason)}</div>` : '') +
+    `<div class="r3">${x.ready ? '<span class="ok">재료 다 있음</span>' : x.pr.pct >= 1 ? (wildText(x.pr) || `중간 조합 ${x.pr.steps}번이면 완성`) : '부족: ' + esc(lack) + (wispsNeeded(x.pr.miss) ? ` · 랜덤위습 약 ${wispsNeeded(x.pr.miss)}개` : '')}</div></div>`;
+}
+const imgTag = (it, cls = '') => it.img ? `<img class="${cls}" src="${THUMB + it.img}" referrerpolicy="no-referrer" loading="lazy" onerror="this.style.visibility='hidden'">` : `<img class="${cls}" style="visibility:hidden">`;
+
+function render() {
+  const t = targets[mode], cur = statsOf(counts);
+  mode = modePref === '자동' ? autoMode() : modePref;
+  document.querySelectorAll('#mode button').forEach(b => { b.classList.toggle('on', b.dataset.m === modePref); if (b.dataset.m === '자동') b.textContent = modePref === '자동' ? `자동(${mode})` : '자동'; });
+
+  // 찜: 찜한 유닛 재료를 먼저 예약하고, 남은 것(avail)으로 나머지를 계산
+  const pool = { ...counts };
+  pinRes = {};
+  for (const id of pins) if (items[id]) pinRes[id] = simulate(id, pool);
+  avail = pool;
+
+  // 능력치 요약
+  let sum = '', warns = [];
+  for (const k of CHECK) {
+    if (!t[k]) continue;
+    const r = Math.min(cur[k] / t[k], 1), cls = r >= 1 ? 'ok' : r >= 0.6 ? 'warn' : 'bad';
+    sum += `<div class="sb"><div class="top"><span>${k}</span><span class="${cls}">${+cur[k].toFixed(2)} / ${t[k]}</span></div>` +
+           `<div class="track"><div class="fill" style="width:${r * 100}%;background:var(--${cls})"></div></div></div>`;
+    if (r < 1) warns.push(k === '보잡' ? '<span class="chip">보스잡기 유닛 없음</span>' : `<span class="chip${cls === 'warn' ? ' w' : ''}">${k} ${+(t[k] - cur[k]).toFixed(2)} 부족</span>`);
+  }
+  if ((counts[0] || 0) >= 3) warns.push(`<span class="chip w">위습 ${counts[0]}개</span>`);
+  for (const [w, label] of Object.entries(WISPS)) if (counts[w]) warns.push(`<span class="chip w" title="${w === '-1' ? (selWisp ? '흔함 대신 쓰는 걸로 계산 중' : '⚙ 설정에서 흔함 대신 쓰기를 켤 수 있어요') : ''}">${label} ${counts[w]}${w === '-1' && selWisp ? ' (계산 포함)' : ''}</span>`);
+  if (!warns.length && Object.keys(counts).length) warns.push('<span class="chip g">목표치 다 채움</span>');
+  const extra = ['마방깍', '공증', '공속', '마젠', '마증', '추가방깍'].filter(k => cur[k]).map(k => `${k === '추가방깍' ? '보스·스토리 추가 방깍' : k} ${+cur[k].toFixed(2)}`).join(' · ');
+  $('summary').innerHTML = sum + `<div>${warns.join(' ')}</div>` + (extra ? `<div class="extra">${extra}</div>` : '');
+
+  // 추천: 진행률 60% 이상(하위 조합 포함) 중 부족한 스탯을 실제로 올려 주는 것, 채우는 양 × 진행률 순
+  recList = [];
+  for (const id of order) {
+    const it = items[id];
+    if (!it.recipes.length || it.lowest || pins.has(id) || it.rank < REC_FROM || it.rank >= REC_TO) continue;
+    const pr = progress(id);
+    if (pr.pct < 0.6) continue;
+    const r = score(it, cur);
+    if (!r.stat) continue;
+    const ready = canCraft(it);
+    recList.push({ it, pr, ready, why: r.why, gains: r.gains, reason: '', s: r.s * (0.4 + 0.6 * Math.min(pr.pct, 1)) - pr.steps * 0.08 + (ready ? 0.3 : 0) + it.tier * 0.02 });
+  }
+  recList.sort((a, b) => b.s - a.s).splice(8);
+  recIds = new Set(recList.map(x => x.it.id));
+  for (const x of recList) x.reason = recReason(x, cur);
+  $('recbar').innerHTML = recList.length ? recList.slice(0, MINI ? 8 : 6).map(recCard).join('')
+    : '<div class="dim" style="padding:4px 2px;grid-column:1/-1">★ 추천: 부족한 스탯을 채워 줄 전설 이상 · 진행률 60%↑ 조합이 아직 없어요</div>';
+
+  // 조합 계획: 지금 재료로 완성되는 전설 이상 조합을 재료 겹침 없이, 부족 스탯이 가장 많이 차는 순서로 최대 4개
+  const plan = makePlan(cur);
+  $('plan').hidden = MINI && !plan.steps.length;
+  $('plan').innerHTML = plan.steps.length
+    ? '<b>📋 조합 계획</b> <span class="dim">(지금 재료로, 재료 안 겹치게)</span> ' + plan.steps.map((x, i) => `<span class="it" data-id="${x.id}"><b>${'①②③④'[i]} ${esc(nm(x.id))}</b> <span class="dim">${x.sim.steps ? '중간 ' + x.sim.steps + '번' : '바로'}</span></span>`).join('<span class="arrow">→</span>') +
+      (plan.steps.some(x => Object.keys(x.sim.wild || {}).length) ? ` <span class="warn">선택위습: ${esc(lackText(plan.steps.reduce((w, x) => { for (const [k, v] of Object.entries(x.sim.wild || {})) w[k] = (w[k] || 0) + v; return w; }, {})))}</span>` : '') +
+      ` <span class="dim">결과:</span> ${CHECK.filter(k => targets[mode][k] && plan.after[k] !== cur[k]).map(k => `${k} ${+cur[k].toFixed(2)}→<b class="ok">${+plan.after[k].toFixed(2)}</b>`).join(' · ')}`
+    : '<span class="dim">📋 조합 계획: 지금 재료만으로 완성되면서 부족한 스탯을 올려 주는 전설 이상 조합은 없어요 → 아래 추천 카드 참고</span>';
+  postSummary(warns, plan);
+
+  // 찜 목록
+  $('pins').hidden = ![...pins].some(id => items[id]);   // 찜한 게 없으면 줄 자체를 숨김
+  $('pins').innerHTML = '<b>📌 찜</b> ' + [...pins].filter(id => items[id]).map(id => {
+    const it = items[id], x = { it, pr: pinRes[id], ready: canCraft(it, counts) };
+    return `<span class="it" data-id="${id}">${esc(short(it.name))} <span style="color:${gcolor(it.grade)}">${esc(it.grade)}</span> · ${stateText(x)}</span>`;
+  }).join('');
+
+  // 작은 화면: 지금 바로 조합 가능한 목록
+  if (MINI) {
+    const ready = order.filter(id => canCraft(items[id])).map(id => items[id]);
+    $('minilist').innerHTML = '<b>지금 조합 가능</b><div>' + (ready.map(it => `<span class="it" data-id="${it.id}" style="display:inline-block;margin:2px 10px 2px 0;color:${gcolor(it.grade)}">${esc(short(it.name))}</span>`).join('') || '<span class="dim">없음</span>') + '</div>';
+  }
+
+  notifyChanges();
+  renderGrid();
+  if (!$('modal').hidden && mstack.length) openRecipe(mstack[mstack.length - 1], false);
+}
+
+function renderGrid() {
+  if (MINI) return;
+  document.querySelectorAll('#gfilter button').forEach(b => b.classList.toggle('on', +b.dataset.f === gfilter));
+  document.querySelectorAll('#gsort button').forEach(b => b.classList.toggle('on', b.dataset.s === gsort));
+  const plain = gsort === 'orig' && !gfilter && !query, now = Date.now();
+  const blocks = [];
+  for (const g of groups) {
+    const rows = [];
+    let have = 0;
+    g.items.forEach((raw, idx) => {
+      if (/^●●/.test(raw.name)) { if (plain) rows.push({ idx, keep: 1, html: `<div class="cell divider">${esc(raw.name)}</div>` }); return; }
+      const it = items[raw.id];
+      if (!it) { if (plain) rows.push({ idx, keep: 1, html: `<div class="cell memo">${esc(raw.name)}</div>` }); return; }
+      const n = counts[it.id] || 0;
+      have += n;
+      if (!matches(it.name)) return;
+      const craft = it.recipes.length && !it.lowest, pinned = pins.has(it.id);
+      const ready = craft && canCraft(it, pinned ? counts : avail);
+      const pr = craft ? progress(it.id) : null, pc = pr ? Math.round(pr.pct * 100) : 0;
+      const tip = esc(it.name) + (it.cat ? ` [${it.cat}]` : '') + (craft ? `\n\n진행률 ${pc}%` + (pc >= 100 && !ready ? ` (중간 조합 ${pr.steps}번)` : '') +
+        '\n재료\n' + it.recipes.map(([m, k]) => `${(counts[m] || 0) >= k ? '✔' : '✘'} ${nm(m)} ${Math.min(counts[m] || 0, k)}/${k}`).join('\n') +
+        (Object.keys(pr.miss).length ? `\n\n부족한 재료 (최하위)\n${lackText(pr.miss)}` : '') : '');
+      const label = !craft ? '' : ready ? '<span class="pc full">가능</span>' : pc >= 100 ? `<span class="pc hi">${stepLabel(pr)}</span>` : `<span class="pc">${pc}%</span>`;
+      const name = query ? esc(it.name).replace(new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'), '<mark>$&</mark>') : esc(it.name);
+      rows.push({ idx, sort: (pr ? pr.pct : 0) + (ready ? 1 : 0), steps: pr ? pr.steps : 0, n,
+        keep: query || n > 0 || ready || pinned || recIds.has(it.id) || pc >= gfilter,
+        html: `<div class="cell${n ? ' have' : ''}${ready ? ' ready' : ''}${flash[it.id] > now ? ' flash' : ''}" title="${tip}">` +
+          (pr && pr.pct > 0 && pr.pct < 1 ? `<div class="pg" style="width:${pr.pct * 100}%"></div>` : '') + imgTag(it) +
+          `<span class="nm">${pinned ? '<span class="pin">📌</span>' : ''}${recIds.has(it.id) ? '<span class="star">★</span>' : ''}${name}</span>${label}` +
+          `<span class="ct">${n || ''}</span><button class="q" data-id="${it.id}" title="조합식">?</button></div>` });
+    });
+    if (!rows.length) continue;
+    if (gsort === 'pct') rows.sort((a, b) => (b.sort || 0) - (a.sort || 0) || (a.steps || 0) - (b.steps || 0) || (b.n || 0) - (a.n || 0) || a.idx - b.idx);
+    const open = !gfilter || query || openGroups.has(g.name), kept = rows.filter(r => r.keep), hid = rows.length - kept.length;
+    const gc = gcolor(g.name);
+    const cells = (open ? rows : kept).map(r => r.html);
+    if (gfilter && !query && hid) cells.push(`<div class="cell fold" data-g="${esc(g.name)}">${open ? '▴ 접기' : `▸ ${gfilter}% 미만 ${hid}개`}</div>`);
+    blocks.push({ name: g.name, gc, have, cells });
+  }
+  if (!blocks.length) { $('grid').innerHTML = '<div class="dim" style="padding:12px">표시할 유닛이 없어요</div>'; return; }
+  // 단 수 = 화면 폭 / 210px. 모든 등급이 ncol 단 안에 들어가는 가장 낮은 높이 H 를 찾아서 순서대로 채운다.
+  // 한 단보다 긴 등급만 '(계속)'으로 나누고, 머리줄(1) + 여백(0.5)도 높이에 넣는다.
+  const ncol = Math.max(1, Math.floor(($('grid').clientWidth || 1200) / 210));
+  const HEAD = 1.5, MIN_CHUNK = 3;
+  function pack(H) {
+    const cols = [{ h: 0, parts: [] }];
+    for (const b of blocks) {
+      let rest = b.cells.length, start = 0, part = 0;
+      while (rest) {
+        let col = cols[cols.length - 1], room = Math.floor(H - col.h - HEAD);
+        if (col.h && room < Math.min(rest, MIN_CHUNK)) { cols.push(col = { h: 0, parts: [] }); room = Math.floor(H - HEAD); }
+        if (room < 1) return null;
+        let take = Math.min(rest, room);
+        if (rest - take > 0 && rest - take < MIN_CHUNK) take = Math.max(1, rest - MIN_CHUNK);   // 다음 단에 1~2줄만 넘기지 않기
+        col.parts.push({ b, start, take, part });
+        col.h += take + HEAD;
+        start += take; rest -= take; part++;
+        if (rest) cols.push({ h: 0, parts: [] });
+      }
+      if (cols.length > ncol) return null;
+    }
+    return cols;
+  }
+  const total = blocks.reduce((a, b) => a + b.cells.length + HEAD, 0);
+  let cols = null;
+  for (let H = Math.max(8, Math.ceil(total / ncol)); !cols; H++) cols = pack(H);
+  while (cols.length < ncol) cols.push({ parts: [] });   // 단 폭 일정하게
+  const head = (b, part) => `<div class="gh" style="--gc:${b.gc}">${esc(b.name)}${part ? ' <small>(계속)</small>' : ''}<span>${!part && b.have ? b.have + '마리' : ''}</span></div>`;
+  $('grid').innerHTML = cols.map(c => `<div class="gcol">${c.parts.map(x => `<div class="grp">${head(x.b, x.part)}${x.b.cells.slice(x.start, x.start + x.take).join('')}</div>`).join('')}</div>`).join('');
+}
+
+// 뽑기·조합으로 바뀐 것 알림 + 칸 반짝임
+function notifyChanges() {
+  const ready = new Set(order.filter(id => canCraft(items[id])));
+  if (prevCounts && notify) {
+    const gains = [];
+    for (const id of new Set([...Object.keys(counts), ...Object.keys(prevCounts)])) {
+      const d = (counts[id] || 0) - (prevCounts[id] || 0);
+      if (d > 0 && items[id]) { gains.push(`+ ${nm(id)}${d > 1 ? ' ×' + d : ''}`); flash[id] = Date.now() + 2800; }
+    }
+    if (gains.length && gains.length <= 6) toast(gains.join('   '));
+    if (prevReady) {
+      const fresh = [...ready].filter(id => !prevReady.has(id) && !items[id].recipes.every(([m]) => m === 0));
+      if (fresh.length && fresh.length <= 5) toast('이제 조합 가능: ' + fresh.map(nm).join(', '), 'ok');
+      const big = fresh.filter(id => items[id].rank >= REC_FROM && items[id].rank < REC_TO);
+      if (big.length) { ding(880); osNote('이제 조합 가능: ' + big.map(nm).join(', ')); }
+    }
+  }
+  const boss = statsOf(counts).보잡;
+  if (prevBoss === 0 && boss > 0 && notify) { toast('보스잡기 유닛 확보!', 'ok'); ding(660); osNote('보스잡기 유닛 확보!'); }
+  const nowStats = statsOf(counts), t = targets[mode];
+  if (prevStats && notify) for (const k of ['이감', '방깍', '스턴'])
+    if (t[k] && prevStats[k] < t[k] && nowStats[k] >= t[k]) { toast(`🎉 ${k} ${t[k]} 달성!`, 'ok'); ding(1046); osNote(`${k} ${t[k]} 달성!`); }
+  prevStats = prevCounts ? nowStats : null;
+  prevCounts = { ...counts }; prevReady = ready; prevBoss = boss;
+}
+function ding(freq = 880, force) {   // 짧은 알림음 (브라우저가 페이지를 한 번 클릭한 뒤부터 소리를 허용해요)
+  if (!sound && !force) return;
+  try {
+    const a = ding.ctx ||= new AudioContext(), v = vol / 100 * 0.3;
+    const beep = (f, at, len, f2) => { const o = a.createOscillator(), g = a.createGain(); o.frequency.setValueAtTime(f, a.currentTime + at);
+      if (f2) o.frequency.exponentialRampToValueAtTime(f2, a.currentTime + at + len);
+      g.gain.setValueAtTime(v, a.currentTime + at); g.gain.exponentialRampToValueAtTime(0.001, a.currentTime + at + len);
+      o.connect(g).connect(a.destination); o.start(a.currentTime + at); o.stop(a.currentTime + at + len); };
+    if (tone === '딩동') { beep(freq * 0.75, 0, 0.35); beep(freq * 0.6, 0.2, 0.45); }
+    else if (tone === '뿅') beep(freq / 2, 0, 0.18, freq * 1.4);
+    else beep(freq, 0, 0.5);
+  } catch {}
+}
+// 21: 윈도우 알림 (페이지가 안 보일 때만 — 게임 중이면 윈도우 오른쪽 아래에 뜸)
+function osNote(text) {
+  try { if (osNotify && document.hidden && Notification.permission === 'granted') new Notification('원랜디 도우미', { body: text, silent: true }); } catch {}
+}
+function toast(text, cls = '') {
+  const el = document.createElement('div');
+  el.className = 'toast ' + cls; el.textContent = text;
+  $('toasts').appendChild(el);
+  while ($('toasts').children.length > 4) $('toasts').firstChild.remove();
+  setTimeout(() => el.remove(), 4500);
+}
+
+// ───────── 조합식 창 ─────────
+let mstack = [];
+function openRecipe(id, push = true) {
+  const it = items[id]; if (!it) return;
+  if (push) mstack.push(id);
+  const n = counts[id] || 0, craft = it.recipes.length && !it.lowest, pinned = pins.has(id);
+  const pr = craft ? progress(id) : null, ready = craft && canCraft(it, pinned ? counts : avail);
+  const card = (mid, need) => {
+    const m = items[mid]; if (!m) return '';
+    const h = counts[mid] || 0, ok = need == null || h >= need;
+    return `<div class="mat ${need == null ? '' : ok ? 'ok' : 'no'}" data-id="${mid}">${imgTag(m)}${esc(short(m.name))}<div class="g" style="color:${gcolor(m.grade)}">${esc(m.grade)}</div>` +
+      `<div class="hv">${need == null ? (h ? '보유 ' + h : '') : `${Math.min(h, need)} / ${need}`}</div></div>`;
+  };
+  const recipeLine = sid => items[sid].recipes.map(([m, k]) => nm(m) + (k > 1 ? ' ×' + k : '')).join(' + ') + ' → <b>' + esc(nm(sid)) + '</b>';
+  const steps = pr ? pr.seq.map(sid => `<li>${recipeLine(sid)}</li>`).join('') + (pr.pct >= 1 ? `<li class="last">${recipeLine(id)}</li>` : '') : '';
+  const lack = pr ? Object.entries(pr.miss) : [];
+  const up = (usedIn[id] || []).map(u => card(u)).join('');
+  $('mbox').innerHTML =
+    `<div class="mh">${mstack.length > 1 ? '<button class="ibtn" data-act="back">←</button>' : ''}<b>${esc(it.name)} <span style="color:${gcolor(it.grade)}">- ${esc(it.grade)}</span></b>` +
+    (craft ? `<button class="ibtn" data-act="pin">${pinned ? '📌 찜 해제' : '📌 찜하기'}</button>` : '') +
+    `<span class="${n ? 'ok' : 'dim'}">보유 ${n}</span><button class="ibtn" data-act="close">✕</button></div>` +
+    (it.descr ? `<div class="sec">${esc(it.descr)}</div>` : '') +
+    (craft ? `<div class="sec"><h4>조합법 · 진행률 ${Math.round(pr.pct * 100)}%${ready ? ' · <span class="ok">지금 조합 가능</span>' : ''}${pinned ? ' · 📌 재료 예약 중' : ''}</h4>` +
+      `<div class="mats">${it.recipes.map(([m, k]) => card(m, k)).join('')}</div></div>` : '') +
+    (steps && !ready ? `<div class="sec"><h4>${pr.pct >= 1 ? '조합 순서' : '지금 할 수 있는 중간 조합'}</h4><ol class="steps">${steps}</ol></div>` : '') +
+    (pr && wildText(pr) ? `<div class="sec warn">${esc(wildText(pr))}</div>` : '') +
+    (pr && wispsNeeded(pr.miss) ? `<div class="sec dim">부족한 흔함을 랜덤위습으로만 채우면 약 <b class="warn">${wispsNeeded(pr.miss)}개</b> 더 뽑아야 해요</div>` : '') +
+    (lack.length ? `<div class="sec"><h4>부족한 재료 (최하위)</h4><div class="mats">${lack.map(([m, k]) => card(+m, null).replace('<div class="hv">', `<div class="hv bad">${k}개 부족 `)).join('')}</div></div>` : '') +
+    (up ? `<div class="sec"><h4>이 유닛이 들어가는 상위 조합</h4><div class="mats">${up}</div></div>` : '');
+  $('modal').hidden = false;
+  if (push) $('mbox').scrollTop = 0;
+}
+const closeAll = () => { $('modal').hidden = true; $('settings').hidden = true; mstack = []; };
+const back = () => { if (mstack.length > 1) { mstack.pop(); openRecipe(mstack[mstack.length - 1], false); } };
+
+// ───────── 설정 창 ─────────
+let hist = [], srv = {};
+// 27: 판 다시보기 — 30초마다 남긴 이감·방깍·스턴(목표 대비 %)과 유닛 수를 선 그래프로
+function graphSvg(g) {
+  const tl = g.timeline || [];
+  if (tl.length < 2) return '<div class="dim">기록된 점이 너무 적어요 (30초마다 한 점)</div>';
+  const W = 560, H = 150, P = 26, maxM = tl[tl.length - 1].m || 1, maxN = Math.max(...tl.map(p => p.n || 0), 1);
+  const T = (g.stats || []).reduce((o, [k, , t]) => (o[k] = t, o), {});
+  const x = m => P + (W - P * 2) * m / maxM, y = v => H - P - (H - P * 2) * Math.min(v, 1.2) / 1.2;
+  const line = (f, c) => `<polyline fill="none" stroke="${c}" stroke-width="2" points="${tl.map(p => x(p.m) + ',' + y(f(p))).join(' ')}"/>`;
+  const C = { 이감: '#4cc38a', 방깍: '#ef5b5b', 스턴: '#6aa8ff' };
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:${W}px;background:#0e1015;border-radius:6px;margin-top:4px">` +
+    `<line x1="${P}" x2="${W - P}" y1="${y(1)}" y2="${y(1)}" stroke="#444" stroke-dasharray="4 4"/><text x="${W - P + 2}" y="${y(1) + 4}" fill="#888" font-size="10">목표</text>` +
+    Object.entries(C).filter(([k]) => T[k]).map(([k, c]) => line(p => (p.s[k] || 0) / T[k], c)).join('') + line(p => (p.n || 0) / maxN, '#8a92a0') +
+    `<text x="${P}" y="${H - 6}" fill="#888" font-size="10">0분</text><text x="${W - P - 20}" y="${H - 6}" fill="#888" font-size="10">${maxM}분</text>` +
+    Object.entries(C).filter(([k]) => T[k]).map(([k, c], i) => `<text x="${P + i * 60}" y="14" fill="${c}" font-size="11">${k}</text>`).join('') + `<text x="${P + 180}" y="14" fill="#8a92a0" font-size="11">유닛 수</text></svg>`;
+}
+// 26: 내보내기 — 엑셀(CSV), 판 하나를 이미지(PNG)로
+function download(name, blob) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); }
+function exportCsv() {
+  const q = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+  const rows = [['시작', '분', '맵', '이감', '방깍', '스턴', '보잡', '부족', '전설 이상 유닛']].concat(hist.map(g => {
+    const st = Object.fromEntries((g.stats || []).map(([k, v]) => [k, v]));
+    return [g.start, g.minutes, g.map, st.이감, st.방깍, st.스턴, st.보잡, (g.warns || []).join(' / '), (g.top || []).join(', ')];
+  }));
+  download('원랜디_판기록.csv', new Blob(['\ufeff' + rows.map(r => r.map(q).join(',')).join('\r\n')], { type: 'text/csv' }));
+}
+function exportPng(g) {
+  const c = document.createElement('canvas'), W = 640, lines = [];
+  const wrap = (t, n = 46) => { const out = []; for (let i = 0; i < t.length; i += n) out.push(t.slice(i, i + n)); return out; };
+  lines.push(['원랜디 판 기록', '#ffd166', 20], [`${g.start} · ${g.minutes}분 · 맵 ${g.map || ''}`, '#8a92a0', 14]);
+  lines.push([(g.stats || []).map(([k, v, t]) => `${k} ${v}/${t}`).join('   '), '#e8eaf0', 15]);
+  lines.push([(g.warns || []).length ? '부족: ' + g.warns.join(', ') : '목표치 다 채움', (g.warns || []).length ? '#ef5b5b' : '#4cc38a', 14]);
+  for (const l of wrap('전설 이상: ' + ((g.top || []).join(', ') || '없음'))) lines.push([l, '#e8eaf0', 14]);
+  c.width = W; c.height = 30 + lines.length * 28;
+  const x = c.getContext('2d'); x.fillStyle = '#12141a'; x.fillRect(0, 0, W, c.height);
+  lines.forEach(([t, col, sz], i) => { x.fillStyle = col; x.font = `${sz}px 'Malgun Gothic', sans-serif`; x.fillText(t, 20, 36 + i * 28); });
+  c.toBlob(b => download(`원랜디_${(g.start || '').replace(/[: ]/g, '-')}.png`, b));
+}
+function openSettings() {
+  $('sbox').innerHTML = `<div class="mh"><b>설정</b><button class="ibtn" data-act="close">✕</button></div>` +
+    `<div class="sec"><h4>목표치 (0 이면 안 봄)</h4><table class="set"><tr><th></th>${CHECK.map(k => `<th>${k}</th>`).join('')}</tr>` +
+    ['물딜', '마딜'].map(m => `<tr><td>${m}</td>${CHECK.map(k => `<td><input type="number" step="${k === '스턴' ? 0.1 : 1}" data-m="${m}" data-k="${k}" value="${targets[m][k]}"></td>`).join('')}</tr>`).join('') +
+    `</table><div class="dim" style="margin-top:6px">기본값: 풀이감 107, 신풀깍 201(sions 메모) · 스턴 물딜 1.5 / 마딜 2 · 보잡 1마리</div>` +
+    `<button class="ibtn" data-act="reset" style="margin-top:8px">기본값으로</button></div>` +
+    `<div class="sec"><label><input type="checkbox" id="setNotify" ${notify ? 'checked' : ''}> 뽑기·조합 가능 알림 띄우기</label><br>` +
+    `<label><input type="checkbox" id="setSound" ${sound ? 'checked' : ''}> 소리 알림 (전설 이상 조합 가능 / 보잡 확보 / 목표 달성)</label>` +
+    ` <select id="setTone">${['띵', '딩동', '뿅'].map(x => `<option${x === tone ? ' selected' : ''}>${x}</option>`).join('')}</select>` +
+    ` 음량 <input type="range" id="setVol" min="5" max="100" value="${vol}" style="vertical-align:middle"> <button class="ibtn" data-act="testSound">들어보기</button><br>` +
+    `<label><input type="checkbox" id="setOs" ${osNotify ? 'checked' : ''}> 윈도우 알림 (게임 중 페이지가 안 보일 때 오른쪽 아래에 표시)</label><br>` +
+    `<label><input type="checkbox" id="setAura" ${auraOnce ? 'checked' : ''}> ● 붙은 수치는 여러 마리여도 한 번만 계산 (끄면 마리 수만큼 더함)</label><br>` +
+    `<label><input type="checkbox" id="setWisp" ${selWisp ? 'checked' : ''}> 흔함선택위습을 흔함 대신 쓰는 걸로 진행률 계산</label></div>` +
+    `<div class="sec"><label><input type="checkbox" id="setStartup" ${srv.startup ? 'checked' : ''}> 윈도우 켤 때 자동 실행 (창 없이 뒤에서)</label>` +
+    ` <button class="ibtn" data-act="quit" style="float:right">프로그램 끄기</button><div class="dim" style="margin-top:4px">버전 ${esc(srv.version || '')}${srv.update ? ` · <a href="${esc(srv.update.url)}" target="_blank" style="color:var(--gold)">새 버전 ${esc(srv.update.ver)} 받기</a>` : ''} · 맵 ${esc(srv.map_version || '')}</div></div>` +
+    `<div class="sec"><h4>지난 판 기록 <button class="ibtn" data-act="csv" style="float:right">엑셀(CSV)로 저장</button></h4><div id="hstat"></div><div id="hist" class="dim">불러오는 중…</div></div>` +
+    `<div class="sec dim">폰에서 보려면 폴더의 <b>폰으로도 보기.bat</b> 로 켜고, 검은 창에 나온 주소를 같은 와이파이의 폰에서 열면 돼요.</div>`;
+  $('settings').hidden = false;
+  fetch('/history').then(r => r.json()).then(h => {
+    hist = h;
+    // 25: 통계 — 판 수, 평균 시간, 목표 다 채운 판, 그 판들에서 자주 만든 전설 이상 유닛
+    const good = h.filter(g => !(g.warns || []).length), freq = {};
+    for (const g of (good.length ? good : h)) for (const u of new Set((g.top || []).map(x => x.replace(/×\d+$/, '')))) freq[u] = (freq[u] || 0) + 1;
+    const topU = Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([u, n]) => `${esc(u)} ${n}판`).join(', ');
+    $('hstat').innerHTML = h.length ? `<div style="margin-bottom:6px">${h.length}판 · 평균 ${Math.round(h.reduce((a, g) => a + (g.minutes || 0), 0) / h.length)}분 · 목표 다 채운 판 <b class="ok">${good.length}</b><br>` +
+      `<span class="dim">${good.length ? '목표 채운 판에서' : '전체 판에서'} 자주 만든 유닛:</span> ${topU || '-'}</div>` : '';
+    $('hist').innerHTML = h.length ? h.slice(0, 20).map((g, i) => `<div style="padding:4px 0;border-top:1px solid var(--line)"><b style="color:var(--fg)">${esc(g.start)}</b> · ${g.minutes}분 · ${esc(g.map || '')} · ` +
+      `${g.warns && g.warns.length ? '<span class="bad">' + esc(g.warns.join(', ')) + '</span>' : '<span class="ok">목표 다 채움</span>'}` +
+      ` <button class="ibtn" data-act="graph" data-i="${i}">그래프</button> <button class="ibtn" data-act="png" data-i="${i}">이미지</button>` +
+      `<br>${esc((g.top || []).join(', ') || '전설 이상 없음')}<div id="graph${i}"></div></div>`).join('')
+      : '아직 기록이 없어요. 판이 끝나면 자동으로 남아요.';
+  }).catch(() => {});
+}
+
+// ───────── 이벤트 ─────────
+document.addEventListener('click', e => {
+  const act = e.target.closest('[data-act]')?.dataset.act;
+  if (act === 'close' || e.target.classList.contains('ov')) return closeAll();
+  if (act === 'back') return back();
+  if (act === 'pin') { const id = mstack[mstack.length - 1]; pins.has(id) ? pins.delete(id) : pins.add(id); store.set('pins', [...pins]); return render(); }
+  if (act === 'testSound') return ding(880, true);
+  if (act === 'quit') { if (confirm('프로그램을 끌까요? (게임 인식이 멈춰요)')) fetch('/quit').then(() => toast('프로그램을 껐어요')); return; }
+  if (act === 'csv') return exportCsv();
+  if (act === 'png') return exportPng(hist[+e.target.dataset.i]);
+  if (act === 'graph') { const el = $('graph' + e.target.dataset.i); el.innerHTML = el.innerHTML ? '' : graphSvg(hist[+e.target.dataset.i]); return; }
+  if (act === 'reset') { targets = structuredClone(DEFAULTS); store.set('targets', targets); render(); return openSettings(); }
+  const fold = e.target.closest('.cell.fold'); if (fold) { const g = fold.dataset.g; openGroups.has(g) ? openGroups.delete(g) : openGroups.add(g); return renderGrid(); }
+  const q = e.target.closest('.q, .strip .it, #minilist .it'); if (q) { mstack = []; return openRecipe(+q.dataset.id); }
+  const mat = e.target.closest('#mbox .mat'); if (mat) return openRecipe(+mat.dataset.id);
+});
+document.addEventListener('change', e => {
+  if (e.target.dataset.k) { const { m, k } = e.target.dataset; targets[m] = { ...targets[m], [k]: +e.target.value || 0 }; store.set('targets', targets); render(); }
+  if (e.target.id === 'setNotify') { notify = e.target.checked; store.set('notify', notify); }
+  if (e.target.id === 'setSound') { sound = e.target.checked; store.set('sound', sound); if (sound) ding(880); }
+  if (e.target.id === 'setTone') { tone = e.target.value; store.set('tone', tone); ding(880, true); }
+  if (e.target.id === 'setVol') { vol = +e.target.value; store.set('vol', vol); ding(880, true); }
+  if (e.target.id === 'setOs') { osNotify = e.target.checked; store.set('osNotify', osNotify); if (osNotify && 'Notification' in window) Notification.requestPermission(); }
+  if (e.target.id === 'setStartup') fetch('/startup?on=' + (e.target.checked ? 1 : 0)).then(r => r.json()).then(j => { srv.startup = j.startup; toast(j.startup ? '윈도우 켤 때 자동으로 실행돼요' : '자동 실행을 껐어요'); });
+  if (e.target.id === 'setAura') { auraOnce = e.target.checked; store.set('auraOnce', auraOnce); render(); }
+  if (e.target.id === 'setWisp') { selWisp = e.target.checked; store.set('selWisp', selWisp); render(); }
+});
+document.addEventListener('keydown', e => {
+  const typing = /INPUT|SELECT/.test(document.activeElement?.tagName);
+  if (e.key === 'Escape') { if (!$('modal').hidden || !$('settings').hidden) closeAll(); else if (query) { $('q').value = query = ''; renderGrid(); $('q').blur(); } }
+  else if (e.key === '/' && !typing) { e.preventDefault(); $('q').focus(); }
+  else if (e.key === 'Backspace' && !typing && !$('modal').hidden) { e.preventDefault(); back(); }
+});
+
+// ───────── 시작 ─────────
+async function init() {
+  if (MINI) document.body.classList.add('mini');
+  const d = await (await fetch('/data')).json();
+  const rank = g => { const i = RANK.findIndex(r => g.name.startsWith(r)); return i < 0 ? RANK.length : i; };
+  d.groups.sort((a, b) => rank(a) - rank(b));
+  groups = d.groups.filter(g => g.items.length);
+  groups.forEach((g, gi) => {
+    let cat = null;
+    for (const it of g.items) {
+      const div = it.name.match(/^●●\s*(.+?)\s*●●/);
+      if (div) { cat = div[1]; continue; }
+      if (/^[^가-힣]*[:：]/.test(it.name) || /풀깍:|풀이감:/.test(it.name)) continue;   // 메모 줄
+      items[it.id] = { id: it.id, name: it.name.replace(/ /g, ' '), grade: g.name, tier: gi, rank: rank(g), cat, recipes: it.recipes,
+                       lowest: !!it.lowest, descr: it.descr || '', img: it.img || '', stat: parse(it.name) };
+      const bonus = [...(it.descr || '').matchAll(/(?<!마)(?:방)?(?:깍|깎)\s*(\d+)|(\d+)\s*(?:방)?(?:깍|깎)/g)].reduce((a, m) => a + +(m[1] || m[2]), 0);
+      if (bonus) items[it.id].stat.each['추가방깍'] = bonus;   // 보스·스토리에만 붙는 방깍: 목표치 계산엔 안 넣고 따로 보여 줌
+      order.push(it.id);
+    }
+  });
+  for (const id of order) for (const [m] of items[id].recipes) if (m !== id && !(usedIn[m] ||= []).includes(id)) usedIn[m].push(id);
+
+  document.querySelectorAll('#mode button').forEach(b => b.onclick = () => { modePref = b.dataset.m; store.set('modePref', modePref); render(); });
+  document.querySelectorAll('#gfilter button').forEach(b => b.onclick = () => { gfilter = +b.dataset.f; openGroups.clear(); store.set('gfilter', gfilter); renderGrid(); });
+  document.querySelectorAll('#gsort button').forEach(b => b.onclick = () => { gsort = b.dataset.s; store.set('gsort', gsort); renderGrid(); });
+  $('owner').onchange = e => fetch('/owner?n=' + e.target.value).then(tick);
+  $('q').oninput = e => { query = e.target.value.trim(); renderGrid(); };
+  $('openSet').onclick = openSettings;
+  $('openOverlay').onclick = () => fetch('/overlay', { method: 'POST' }).then(() => toast('게임 위 작은 창을 띄웠어요. 끌어서 옮기고 ✕로 닫아요'));
+  $('openMini').onclick = () => window.open('/?mini', 'ordr-mini', 'width=380,height=720');
+  let rz; window.addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(renderGrid, 150); });
+  render();
+  tick(); setInterval(tick, 1000);
+}
+
+let lastKey = '', lastNotice = null, dataVer = 0;
+async function tick() {
+  try {
+    const s = await (await fetch('/counts', { cache: 'no-store' })).json();
+    $('st').textContent = s.status === '첫 스캔 중' ? `첫 스캔 ${s.scan || 0}%` : s.status.startsWith('연결됨 (') ? `연결됨 · 나머지 ${s.scan || 0}%` : s.status;
+    $('st').classList.toggle('on', s.status.startsWith('연결됨'));
+    const slots = [...new Set([...Object.keys(s.players).map(Number), s.owner])].sort((a, b) => a - b);
+    const opts = `<option value="auto"${s.auto ? ' selected' : ''}>자동 (${s.owner + 1}번)</option>` +
+      slots.map(k => `<option value="${k}"${!s.auto && k === s.owner ? ' selected' : ''}>${k + 1}번 ${k === 7 ? '(전시용)' : ''} ${s.players[k] || 0}마리</option>`).join('');
+    if ($('owner').innerHTML !== opts && document.activeElement !== $('owner')) $('owner').innerHTML = opts;
+    if (s.notice && s.notice !== lastNotice) { if (lastNotice !== null) toast(s.notice, 'ok'); lastNotice = s.notice; }
+    if (lastNotice === null) lastNotice = s.notice || '';
+    if (dataVer && s.data_ver !== dataVer) return location.reload();   // 새 맵 데이터로 바뀜
+    dataVer = s.data_ver; srv = s;
+    // 작은 창에 '페이지 살아 있음' 신호: 내용이 안 바뀌어도 5초마다 다시 보낸다
+    if (lastSummary && Date.now() - lastPostAt > 5000) { lastPostAt = Date.now(); fetch('/summary', { method: 'POST', body: lastSummary }).catch(() => {}); }
+    if (s.update) { $('upd').style.display = ''; $('upd').href = s.update.url; $('upd').textContent = `새 버전 ${s.update.ver} 받기`; }
+    const key = JSON.stringify(s.counts);
+    if (key !== lastKey) {
+      if (!lastKey || !Object.keys(counts).length) prevCounts = null;   // 첫 연결·새 판: 알림 폭탄 방지
+      lastKey = key; counts = s.counts; render();
+    }
+  } catch { $('st').textContent = '프로그램이 꺼져 있어요'; $('st').classList.remove('on'); }
+}
+init();
+</script>
+</body>
+</html>

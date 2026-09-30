@@ -1,0 +1,11 @@
+# 개인 설정·기록 (PC마다 다름)
+config.json
+history.json
+overlay.json
+log.txt
+# sions 사용자 자료: 배포 파일(exe)에만 예비용으로 넣고 저장소엔 안 올림
+sions_cache.json
+__pycache__/
+tools/
+inject.js
+*.zip
