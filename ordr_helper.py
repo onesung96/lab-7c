@@ -11,7 +11,7 @@
 import ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.3.0'
+VERSION = '1.4.0'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -68,7 +68,7 @@ def apply_mapping(mp):
 
 state = {'status': '워크3 기다리는 중', 'counts': {}, 'players': {}, 'ts': 0, 'scan': 0,
          'owner': cfg['owner'], 'auto': cfg['auto'], 'managed': [], 'notice': '', 'data_ver': 1,
-         'map_version': cfg['map_version'], 'version': VERSION, 'update': None, 'startup': False}
+         'map_version': cfg['map_version'], 'version': VERSION, 'frozen': FROZEN, 'update': None, 'startup': False}
 apply_mapping(json.load(open(res_or_local('mapping.json'), encoding='utf-8')))
 SIONS = b'{}'
 summary = {}           # 페이지가 계산해서 보내 주는 요약 (작은 창·판 기록용)
@@ -398,7 +398,8 @@ def overlay():
     단축키: Ctrl+Shift+O 클릭 통과(게임에 클릭 전달) 켜기/끄기, Ctrl+Shift+H 숨기기/보이기."""
     import tkinter as tk
     OV_PATH = os.path.join(HERE, 'overlay.json')
-    oc = {'x': 24, 'y': 140, 'font': 9, 'alpha': 0.9, 'full': True}
+    oc = {'x': 24, 'y': 140, 'font': 9, 'alpha': 0.9, 'full': True, 'bar': False,
+          'show': {'stats': True, 'wish': True, 'plan': True, 'recs': True, 'pins': True, 'grades': True}}
     try:
         oc.update(json.load(open(OV_PATH, encoding='utf-8')))
     except Exception:
@@ -424,6 +425,15 @@ def overlay():
     last = {'s': {}, 'ready': set(), 'new': {}}
     button('✕', root.destroy)
     tog = button('간단히' if oc['full'] else '전체', lambda: (oc.update(full=not oc['full']), tog.config(text='간단히' if oc['full'] else '전체'), save(), draw(last['s'])), '#6aa8ff')
+    def menu(e=None):   # ☰: 보일 항목 고르기 + 가로 띠 모드
+        m = tk.Menu(root, tearoff=0)
+        for key, label in (('stats', '스탯·부족 경고'), ('wish', '뽑히면 좋은 흔함'), ('plan', '조합 계획'), ('recs', '추천'), ('pins', '찜'), ('grades', '등급별 표')):
+            m.add_command(label=('✔ ' if oc['show'].get(key, True) else '   ') + label,
+                          command=lambda k=key: (oc['show'].update({k: not oc['show'].get(k, True)}), save(), draw(last['s'])))
+        m.add_separator()
+        m.add_command(label=('✔ ' if oc['bar'] else '   ') + '가로 띠 모드 (화면 위쪽 한 줄)', command=lambda: (oc.update(bar=not oc['bar']), save(), restyle()))
+        m.tk_popup(root.winfo_pointerx(), root.winfo_pointery())
+    button('☰', menu)
     button('◐', lambda: (oc.update(alpha={0.9: 0.75, 0.75: 0.6, 0.6: 0.95}.get(oc['alpha'], 0.9)), root.attributes('-alpha', oc['alpha']), save()))
     button('A+', lambda: (oc.update(font=min(oc['font'] + 1, 14)), save(), restyle()))
     button('A-', lambda: (oc.update(font=max(oc['font'] - 1, 7)), save(), restyle()))
@@ -441,7 +451,10 @@ def overlay():
 
     def restyle():
         f = oc['font']
-        txt.config(font=('Malgun Gothic', f), width=60)   # 글자 수 기준이라 글자가 커지면 창도 같이 커진다
+        # 글자 수 기준이라 글자가 커지면 창도 같이 커진다. 띠 모드는 화면 폭 전체, 줄바꿈 없음
+        txt.config(font=('Malgun Gothic', f), width=int(root.winfo_screenwidth() / (f * 0.95)) if oc['bar'] else 60, wrap='none' if oc['bar'] else 'word')
+        if oc['bar']: root.geometry('+0+0')
+        else: root.geometry(f"+{oc['x']}+{oc['y']}")
         for tag, kw in {'dim': {'foreground': DIM}, 'ok': {'foreground': '#4cc38a'}, 'warn': {'foreground': '#f0b43c'},
                         'bad': {'foreground': '#ef5b5b'}, 'gold': {'foreground': '#ffd166'}, 'b': {'font': ('Malgun Gothic', f, 'bold')},
                         'h': {'font': ('Malgun Gothic', f + 1, 'bold')}, 'fg': {'foreground': FG}, 'new': {'background': '#3d5a2a', 'foreground': '#ffffff'}}.items():
@@ -500,30 +513,45 @@ def overlay():
                 put(', ' if i < len(names) - 1 else '\n', sep_tag)
 
         title.config(text=f"원랜디 도우미 · {s.get('status', '')} · {s.get('mode', '')}" + (' · 클릭 통과 중(Ctrl+Shift+O)' if flags['click'] else ''))
+        show = lambda k: oc['show'].get(k, True)
+        if oc['bar']:   # 한 줄 띠: 스탯 · 부족 · 계획 · 추천 2개 · 지금 가능
+            for k, v, t in s.get('stats', []) if show('stats') else []:
+                r = v / t if t else 1
+                put(f'{k} ', 'b'); put(f'{v}/{t}  ', 'ok' if r >= 1 else 'warn' if r >= 0.6 else 'bad')
+            if show('wish') and s.get('wish'): put(' | 뽑히면 좋음: ', 'dim'); put(s['wish'])
+            if show('plan') and s.get('plan'): put(' | 계획 ', 'dim'); put(s['plan']['steps'], 'gold')
+            for r in s.get('recs', [])[:2] if show('recs') else []:
+                put(' | ★ ', 'gold'); put(r['n'], 'b'); put(f" {r['gains']} "); put(r['st'], 'ok' if r['st'] == '바로 가능' else 'warn')
+            if s.get('ready'): put(' | 가능: ', 'dim'); put(', '.join(s['ready'][:8]), 'ok')
+            txt.config(height=1, state='disabled')
+            return
         sel = flags.get('sel')
         if sel and sel in info:
             put(f"▣ {sel.replace('|', ' · ')}\n", 'gold', 'b')
             for line in info[sel].split('\n'):
                 put('   ' + line + '\n')
             put('\n')
-        for k, v, t in s.get('stats', []):
-            r = v / t if t else 1
-            put(f'{k} ', 'b'); put(f'{v}/{t}   ', 'ok' if r >= 1 else 'warn' if r >= 0.6 else 'bad')
-        put('\n')
-        warns = s.get('warns') or []
-        put(('  ·  '.join(warns) if warns else '목표치 다 채움') + '\n', 'bad' if warns else 'ok')
-        if s.get('plan'):
+        if show('stats'):
+            for k, v, t in s.get('stats', []):
+                r = v / t if t else 1
+                put(f'{k} ', 'b'); put(f'{v}/{t}   ', 'ok' if r >= 1 else 'warn' if r >= 0.6 else 'bad')
+            put('\n')
+            warns = s.get('warns') or []
+            put(('  ·  '.join(warns) if warns else '목표치 다 채움') + '\n', 'bad' if warns else 'ok')
+        if show('wish') and s.get('wish'):
+            put('뽑히면 좋은 흔함: ', 'dim'); put(s['wish'] + '\n')
+        if show('plan') and s.get('plan'):
             put('▶ 계획 ', 'gold', 'b'); put(s['plan']['steps'], 'gold'); put(f"   ({s['plan']['result']})\n", 'dim')
-        for r in s.get('recs', [])[: (6 if oc['full'] else 3)]:
+        for r in s.get('recs', [])[: (6 if oc['full'] else 3)] if show('recs') else []:
             put('★ ', 'gold'); unit(r['n'], f"{r['n']}|{r['g']}", 'b'); put(f" {r['g']} ", color(r['gc'])); put(f"{r['gains']}  "); put(r['st'], 'ok' if r['st'] == '바로 가능' else 'warn')
             put((f"  {r['why']}" if r.get('why') and oc['full'] else ''), 'gold')
             put((f"  부족: {r['lack']}" if r['lack'] and oc['full'] else '') + '\n', 'dim')
-        for p in s.get('pins', []):
+        for p in s.get('pins', []) if show('pins') else []:
             put('찜 ', 'warn'); put(f"{p['n']} · {p['st']}\n")
         if not oc['full']:
             if s.get('ready'):
                 put('지금 가능: ', 'ok'); put(', '.join(s['ready']) + '\n', 'ok')
-        else:
+        elif show('grades'):
             for g in s.get('grades', []):
                 put(f"\n{g['g']}", color(g['gc']), 'h'); put('\n')
                 if g['have']: put('  보유 ', 'dim'); units(g['have'], g['g'], 'fg', 'fg')
@@ -591,6 +619,38 @@ def check_update():
         time.sleep(6 * 3600)
 
 
+def self_update():
+    """최신 릴리스 zip 을 받아 풀고, 프로그램이 꺼진 뒤 파일을 덮어쓰고 다시 켜는 배치 파일을 돌린다.
+    config·기록·overlay 설정은 zip 에 없어서 그대로 남는다."""
+    import zipfile
+    if not FROZEN:
+        raise RuntimeError('exe 로 켰을 때만 자동 교체돼요')
+    req = urllib.request.Request(f'https://api.github.com/repos/{REPO}/releases/latest', headers={'User-Agent': 'ordr-helper'})
+    rel = json.loads(urllib.request.urlopen(req, timeout=15).read())
+    url = next(a['browser_download_url'] for a in rel['assets'] if a['name'].endswith('.zip'))
+    zpath, new = os.path.join(HERE, 'update.zip'), os.path.join(HERE, '_new')
+    urllib.request.urlretrieve(url, zpath)
+    with zipfile.ZipFile(zpath) as z:
+        z.extractall(new)
+    inner = [d for d in os.listdir(new) if os.path.isdir(os.path.join(new, d))]
+    src = os.path.join(new, inner[0]) if len(inner) == 1 else new   # zip 안에 폴더 하나로 들어 있다
+    if not os.path.exists(os.path.join(src, os.path.basename(sys.executable))):
+        raise RuntimeError('받은 파일에 실행 파일이 없어요')
+    bat = os.path.join(HERE, '_update.bat')
+    args = ' '.join(dict.fromkeys(sys.argv[1:] + ['--no-browser']))   # 같은 옵션으로 다시 켜되, 페이지는 이미 열려 있으니 새 탭은 안 연다
+    open(bat, 'w', encoding='mbcs').write(
+        '@echo off\r\n'
+        'timeout /t 3 /nobreak >nul\r\n'
+        f'taskkill /f /im "{os.path.basename(sys.executable)}" >nul 2>&1\r\n'
+        f'robocopy "{src}" "{HERE}" /E /NFL /NDL /NJH /NJS /R:5 /W:1 >nul\r\n'
+        f'rmdir /s /q "{new}"\r\n'
+        f'del "{zpath}"\r\n'
+        f'start "" "{sys.executable}" {args}\r\n'
+        'del "%~f0"\r\n')
+    subprocess.Popen(['cmd', '/c', bat], creationflags=0x08000000 | 0x00000200, close_fds=True)   # 창 없이, 우리와 따로
+    threading.Timer(1.0, lambda: os._exit(0)).start()
+
+
 def spawn_overlay():
     args = [sys.executable] + ([] if FROZEN else [os.path.abspath(__file__)]) + ['--overlay-only', f'--port={PORT}']
     subprocess.Popen(args, creationflags=0x08000000)
@@ -634,6 +694,12 @@ class Handler(BaseHTTPRequestHandler):
             import urllib.parse
             state['diag_req'] = urllib.parse.unquote(q[5:]) if q.startswith('name=') else '?'
             self._send(200, b'ok', 'text/plain')
+        elif path == '/update':
+            try:
+                self_update(); self._send(200, b'ok', 'text/plain')
+            except Exception as e:
+                state['notice'] = f'업데이트 실패: {e}'; traceback.print_exc()
+                self._send(500, str(e).encode(), 'text/plain; charset=utf-8')
         elif path == '/quit':
             self._send(200, b'bye', 'text/plain'); threading.Timer(0.3, lambda: os._exit(0)).start()
         elif path == '/history':
