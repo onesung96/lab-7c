@@ -11,7 +11,7 @@
 import ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.4.0'
+VERSION = '1.4.2'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -30,7 +30,7 @@ CHUNK = 1 << 20           # ponytail: 1MB reads + 10ms nap every 16MB; tune if t
 NAP_EVERY, NAP = 16, 0.01
 TICK = 0.5                # 유닛 구역(1~2MB)은 0.5초마다 다시 읽는다
 SMALL = 1 << 20           # 유닛은 64KB~1MB 짜리 작은 구역에 생긴다
-SMALL_MB, BIG_MB = 24, 8  # 틱마다 추가로 훑는 양: 유닛 없던 작은 구역(빨리 한 바퀴) / 큰 구역(천천히)
+SMALL_MB, BIG_MB = 32, 16  # 틱마다 추가로 훑는 양: 유닛 없던 작은 구역(빨리 한 바퀴) / 큰 구역(천천히)
 PIECE = 8 << 20           # 큰 구역은 이만큼씩 잘라서 훑는다
 # 위습 종류: sions 도우미엔 없어서 음수 id 로 따로 센다 (페이지가 이름을 붙임)
 WISP_CODES = {'e018': -1, 'e017': -2, 'e016': -3, 'e019': -4, 'e01A': -5}
@@ -157,7 +157,16 @@ k32.GetExitCodeProcess.argtypes = [W.HANDLE, ctypes.POINTER(W.DWORD)]
 psapi.EnumProcessModulesEx.argtypes = [W.HANDLE, ctypes.POINTER(ctypes.c_void_p), W.DWORD, ctypes.POINTER(W.DWORD), W.DWORD]
 
 
+PID_TEST = next((int(a.split('=')[1]) for a in sys.argv if a.startswith('--pid=')), None)   # 시험용: 가짜 게임 프로세스에 붙기
+
+
 def find_pid():
+    if PID_TEST:
+        h = k32.OpenProcess(0x1000, False, PID_TEST)
+        code = W.DWORD()
+        ok = h and k32.GetExitCodeProcess(h, ctypes.byref(code)) and code.value == 259
+        if h: k32.CloseHandle(h)
+        return PID_TEST if ok else None
     out = subprocess.run(['tasklist', '/FI', f'IMAGENAME eq {EXE}', '/FO', 'CSV', '/NH'],
                          capture_output=True, text=True, creationflags=0x08000000).stdout
     for line in out.splitlines():
@@ -239,9 +248,11 @@ class Game:
                 if i % 8 == 0:
                     o = b[i:i + SZ] if i + SZ <= len(b) else self.read(base + off + i, SZ)
                     if o and len(o) == SZ:
-                        hit = True  # any unit object (dummies too): new units land in these pools later
                         self.objs += 1
                         if len(self.samples) < 400: self.samples.append(o)
+                        if not o[OFF_TYPE:OFF_TYPE + 4].isalnum():   # 유닛 코드는 영문·숫자 4글자: 아니면 유닛 흔적이 아님
+                            i = b.find(self.vt, i + 1); continue
+                        hit = True  # 더미 유닛 포함: 새 유닛이 이 풀에 생긴다
                         sid = CODES.get(o[OFF_TYPE:OFF_TYPE + 4])
                         if detail is not None:
                             detail.append((struct.unpack_from('<I', o, OFF_OWNER)[0], o[OFF_TYPE:OFF_TYPE + 4][::-1].decode('latin1', 'replace'),
@@ -309,6 +320,14 @@ def write_diag(g, regions):
     state['notice'] = f'신고 기록을 남겼어요: {os.path.basename(path)} (Claude에게 이 파일을 알려 주세요)'
 
 
+def chunks_of(regions):
+    """구역을 1MB 조각으로. 매 틱 다시 읽는 단위는 '구역'이 아니라 '조각'이다 —
+    수백 MB 구역에 유닛이 하나 있다고 구역 전체를 매번 읽으면 한 바퀴에 수십 초가 걸린다."""
+    for base, size in regions:
+        for off in range(0, size, CHUNK):
+            yield (base + off, min(CHUNK, size - off))
+
+
 def tracker():
     while True:
         pid = find_pid()
@@ -321,26 +340,31 @@ def tracker():
             state['status'] = f'워크3 접근 실패: {e}'; time.sleep(5); continue
         try:
             state['status'] = '첫 스캔 중'
-            seen = g.regions()
-            hot, found = set(), []
-            total, done, shown = sum(sz for _, sz in seen) or 1, 0, False
-            # 유닛은 64KB~1MB 짜리 작은 구역에 모여 있다: 지난 판 구역 -> 작은 구역 -> 큰 구역 순으로 훑고,
-            # 작은 구역을 다 보면 바로 화면에 보여 준다 (나머지는 뒤에서 계속)
-            for r in sorted(seen, key=lambda r: (r[0] not in last_hot_bases, r[1])):
-                if not shown and r[1] > (2 << 20) and found:
-                    publish(found); state['status'], shown = '연결됨 (나머지 확인 중)', True
-                if g.scan(*r, found):
-                    hot.add(r)
-                done += r[1]; state['scan'] = round(done * 100 / total)
-            last_hot_bases.clear(); last_hot_bases.update(b for b, _ in hot)
+
+            def full_scan():
+                seen = g.regions()
+                hot, found, bases = set(), [], set()
+                total, done, shown = sum(sz for _, sz in seen) or 1, 0, False
+                # 유닛은 64KB~1MB 짜리 작은 구역에 모여 있다: 지난 판 구역 -> 작은 구역 -> 큰 구역 순으로 훑고,
+                # 작은 구역을 다 보면 바로 화면에 보여 준다 (나머지는 뒤에서 계속)
+                for r in sorted(seen, key=lambda r: (r[0] not in last_hot_bases, r[1])):
+                    if not shown and r[1] > (2 << 20) and found:
+                        publish(found); state['status'], shown = '연결됨 (나머지 확인 중)', True
+                    for c in chunks_of([r]):
+                        if g.scan(*c, found):
+                            hot.add(c); bases.add(r[0])
+                    done += r[1]; state['scan'] = round(done * 100 / total)
+                last_hot_bases.clear(); last_hot_bases.update(bases)   # 다음 판 첫 스캔에서 먼저 볼 구역
+                return seen, hot, found
+
+            seen, hot, found = full_scan()
             if not found and g.objs > 100 and fix_offsets(g.samples):   # 워크3 패치로 필드 위치가 바뀐 경우
-                found = []
-                for r in sorted(hot):
-                    g.scan(*r, found)
+                seen, hot, found = full_scan()
             publish(found)
             state['status'] = '연결됨'
             small_q, big_q, fresh, empty_since = [], [], {}, None
             while g.alive():
+                t0 = time.time()
                 # 로비 / 로딩 / 판 끝: 유닛이 6초 넘게 없으면 판이 새로 시작될 때 전체를 다시 훑는다
                 empty_since = (empty_since or time.time()) if not state['players'] else None
                 if empty_since and time.time() - empty_since > 6:
@@ -349,37 +373,28 @@ def tracker():
                     break
                 now = g.regions()
                 for r in now - seen:
-                    fresh[r] = 30  # 새 메모리 구역은 첫 유닛이 몇 틱 늦게 들어올 수 있다
-                fresh = {r: n - 1 for r, n in fresh.items() if n > 0 and r in now}
-                todo = (hot & now) | set(fresh)
+                    if r[1] <= 4 * SMALL:   # 새로 생긴 작은 구역: 첫 유닛이 몇 틱 늦게 들어올 수 있어 한동안 지켜본다
+                        for c in chunks_of([r]):
+                            fresh[c] = 30
+                fresh = {c: n - 1 for c, n in fresh.items() if n > 0}
                 seen = now
-                # 유닛이 없던 작은 구역: 새 유닛이 여기 생기면 놓치므로 몇 초마다 한 바퀴 돈다
+                todo = set(hot) | set(fresh)
+                # 유닛이 없던 작은 구역: 새 유닛이 여기 생기면 놓치므로 몇 초마다 한 바퀴 돈다. 큰 구역은 천천히.
                 if not small_q:
-                    small_q = sorted(r for r in now - hot if r[1] <= SMALL)
-                budget = SMALL_MB << 20
-                while small_q and budget > 0:
-                    r = small_q.pop()
-                    if r in now:
-                        todo.add(r); budget -= r[1]
-                # 큰 구역은 잘라서 천천히 (유닛이 있을 가능성이 낮다)
+                    small_q = [c for c in chunks_of(sorted(r for r in now if r[1] <= SMALL)) if c not in hot]
                 if not big_q:
-                    big_q = [(r, off) for r in sorted(now - hot) if r[1] > SMALL for off in range(0, r[1], PIECE)]
-                pieces, budget = [], BIG_MB << 20
-                while big_q and budget > 0:
-                    r, off = big_q.pop()
-                    if r in now and r not in todo:
-                        pieces.append((r, off)); budget -= PIECE
+                    big_q = [c for c in chunks_of(sorted(r for r in now if r[1] > SMALL)) if c not in hot]
+                for q, mb in ((small_q, SMALL_MB), (big_q, BIG_MB)):
+                    for _ in range(min(mb, len(q))):
+                        todo.add(q.pop())
                 found, newhot = [], set()
-                for r in todo:
-                    if g.scan(*r, found):
-                        newhot.add(r)
-                for r, off in pieces:
-                    part = []
-                    if g.scan(r[0] + off, min(PIECE + SZ, r[1] - off), part):
-                        newhot.add(r)   # 다음 틱부터 구역 전체를 매번 읽는다
-                        found += part
+                for c in todo:
+                    if g.scan(*c, found):
+                        newhot.add(c)
                 hot = newhot
                 publish(found)
+                state['tick_ms'] = round((time.time() - t0) * 1000)
+                state['hot_mb'] = round(sum(n for _, n in hot) / 1048576, 1)
                 if state.get('diag_req'):
                     write_diag(g, now)
                 time.sleep(TICK)

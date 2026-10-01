@@ -562,19 +562,23 @@ function renderGrid() {
   const ncol = Math.max(1, Math.floor(($('grid').clientWidth || 1200) / 210));
   const HEAD = 1.5, MIN_CHUNK = 3;
   function pack(H) {
-    const cols = [{ h: 0, parts: [] }];
+    // 등급은 통째로 둔다: 지금 단에 안 들어가면 다음 단으로 넘긴다.
+    // 한 단보다 긴 등급만 나누는데, 항상 단 맨 위에서 시작해 최소 개수로·같은 길이로 나눈다 (3조각으로 흩어지지 않게).
+    const cols = [{ h: 0, parts: [] }], cap = Math.floor(H - HEAD);
+    if (cap < 1) return null;
+    const next = () => { cols.push({ h: 0, parts: [] }); return cols[cols.length - 1]; };
     for (const b of blocks) {
-      let rest = b.cells.length, start = 0, part = 0;
-      while (rest) {
-        let col = cols[cols.length - 1], room = Math.floor(H - col.h - HEAD);
-        if (col.h && room < Math.min(rest, MIN_CHUNK)) { cols.push(col = { h: 0, parts: [] }); room = Math.floor(H - HEAD); }
-        if (room < 1) return null;
-        let take = Math.min(rest, room);
-        if (rest - take > 0 && rest - take < MIN_CHUNK) take = Math.max(1, rest - MIN_CHUNK);   // 다음 단에 1~2줄만 넘기지 않기
-        col.parts.push({ b, start, take, part });
-        col.h += take + HEAD;
-        start += take; rest -= take; part++;
-        if (rest) cols.push({ h: 0, parts: [] });
+      const n = b.cells.length;
+      let col = cols[cols.length - 1];
+      if (n <= Math.floor(H - col.h - HEAD)) { col.parts.push({ b, start: 0, take: n, part: 0 }); col.h += n + HEAD; }
+      else if (n <= cap) { col = next(); col.parts.push({ b, start: 0, take: n, part: 0 }); col.h += n + HEAD; }
+      else {
+        const parts = Math.ceil(n / cap), size = Math.ceil(n / parts);
+        for (let i = 0, start = 0; i < parts; i++, start += size) {
+          if (col.h) col = next();
+          const take = Math.min(size, n - start);
+          col.parts.push({ b, start, take, part: i }); col.h += take + HEAD;
+        }
       }
       if (cols.length > ncol) return null;
     }
@@ -900,6 +904,7 @@ async function tick() {
       if (autoPng && gameSnap && gameSnap.stats) exportPng({ ...gameSnap, start: new Date(hadGame).toLocaleString('ko-KR', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }), minutes: Math.round((Date.now() - hadGame) / 60000), map: s.map_version });
       hadGame = false; gameSnap = null;
     }
+    $('st').title = s.tick_ms != null ? `메모리 한 바퀴 ${s.tick_ms}ms · 매번 읽는 양 ${s.hot_mb}MB` : '';
     const age = s.ts ? Date.now() / 1000 - s.ts : 0;   // 서버가 마지막으로 메모리를 읽은 뒤 지난 시간
     $('age').textContent = s.status.startsWith('연결됨') && age >= 3 ? `${Math.round(age)}초 전 갱신` : '';
     const key = JSON.stringify(s.counts);
