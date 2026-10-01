@@ -11,7 +11,7 @@
 import ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.4.2'
+VERSION = '1.5.0'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -663,7 +663,7 @@ def self_update():
         f'start "" "{sys.executable}" {args}\r\n'
         'del "%~f0"\r\n')
     subprocess.Popen(['cmd', '/c', bat], creationflags=0x08000000 | 0x00000200, close_fds=True)   # 창 없이, 우리와 따로
-    threading.Timer(1.0, lambda: os._exit(0)).start()
+    threading.Timer(1.0, quit_app).start()
 
 
 def spawn_overlay():
@@ -716,7 +716,7 @@ class Handler(BaseHTTPRequestHandler):
                 state['notice'] = f'업데이트 실패: {e}'; traceback.print_exc()
                 self._send(500, str(e).encode(), 'text/plain; charset=utf-8')
         elif path == '/quit':
-            self._send(200, b'bye', 'text/plain'); threading.Timer(0.3, lambda: os._exit(0)).start()
+            self._send(200, b'bye', 'text/plain'); threading.Timer(0.3, quit_app).start()
         elif path == '/history':
             try:
                 self._json(json.load(open(HIST_PATH, encoding='utf-8'))[::-1])
@@ -747,25 +747,64 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+def open_page():
+    import webbrowser
+    webbrowser.open(f'http://127.0.0.1:{PORT}')
+
+
+def quit_app():
+    if TRAY:
+        TRAY.remove()   # 아이콘을 지우고 나가야 트레이에 유령 아이콘이 안 남는다
+    os._exit(0)
+
+
+TRAY = None
+
 if __name__ == '__main__':
     if '--overlay-only' in sys.argv:
         overlay(); sys.exit()
+    lan = '--lan' in sys.argv   # 폰/다른 PC 에서 보기: 같은 와이파이 안에서만
+    try:
+        class Server(ThreadingHTTPServer):
+            allow_reuse_address = False   # 윈도우는 기본값(True)이면 같은 포트를 두 프로그램이 동시에 잡는다 -> 중복 실행을 못 막음
+        srv = Server(('0.0.0.0' if lan else '127.0.0.1', PORT), Handler)
+    except OSError:
+        # 이미 켜져 있다: 또 켜지 말고 페이지만 열어 준다 (두 번째 실행이 조용히 죽으면 켜졌는지 헷갈린다)
+        print('이미 실행 중이에요. 페이지를 엽니다.')
+        if '--no-browser' not in sys.argv:
+            open_page()
+        sys.exit()
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    if '--no-tray' not in sys.argv:
+        import tray
+        units = lambda: sum(n for k, n in state['counts'].items() if k >= 0)
+        TRAY = tray.Tray(os.path.join(RES, 'icon.ico'),
+                         lambda: f"원랜디 도우미 {VERSION} · {state['status']}" + (f" · 내 유닛 {units()}" if state['players'] else ''),
+                         [('도우미 페이지 열기', open_page),
+                          ('게임 위에 띄우기', spawn_overlay),
+                          ('-', None),
+                          (lambda: f"{state['status']}" + (f" · {state['owner'] + 1}번 슬롯 · 유닛 {units()}" if state['players'] else ''), None),
+                          ('-', None),
+                          ('프로그램 종료', quit_app)],
+                         open_page)
+        TRAY.start()
     SIONS = json.dumps(load_sions(), ensure_ascii=False).encode()
     threading.Thread(target=check_map_update, daemon=True).start()
     threading.Thread(target=check_update, daemon=True).start()
     state['startup'] = os.path.exists(STARTUP)
     threading.Thread(target=tracker, daemon=True).start()
-    lan = '--lan' in sys.argv   # 폰/다른 PC 에서 보기: 같은 와이파이 안에서만
-    srv = ThreadingHTTPServer(('0.0.0.0' if lan else '127.0.0.1', PORT), Handler)
-    print(f'원랜디 자동 카운터 실행 중 - 브라우저에서 http://127.0.0.1:{PORT} 열기  (끄려면 이 창을 닫으세요)')
+    print(f'원랜디 자동 카운터 실행 중 - 브라우저에서 http://127.0.0.1:{PORT} 열기  (끄려면 트레이 아이콘 → 프로그램 종료)')
     if lan:
         import socket
         ip = socket.gethostbyname(socket.gethostname())
         print(f'폰에서 보기: 같은 와이파이에서 http://{ip}:{PORT}/?mini  (윈도우 방화벽이 물으면 "개인 네트워크" 허용)')
     if '--no-browser' not in sys.argv:
-        import webbrowser; webbrowser.open(f'http://127.0.0.1:{PORT}')
+        open_page()
+    if TRAY:
+        time.sleep(0.5)
+        state['tray'] = TRAY.ok
+        TRAY.balloon('원랜디 도우미가 켜졌어요', '이 아이콘을 누르면 페이지가 열려요. 끄려면 오른쪽 클릭 → 프로그램 종료')
     last = None
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
         while True:
             s = f"[{state['status']}{' ' + str(state['scan']) + '%' if state['status'] == '첫 스캔 중' else ''}] 내 슬롯={state['owner'] + 1}번{'(자동)' if state['auto'] else ''} 유닛={sum(n for k, n in state['counts'].items() if k >= 0)} 플레이어별={state['players']}"
@@ -773,4 +812,4 @@ if __name__ == '__main__':
                 print(time.strftime('%H:%M:%S'), s, flush=True); last = s
             time.sleep(1)
     except KeyboardInterrupt:
-        pass
+        quit_app()
