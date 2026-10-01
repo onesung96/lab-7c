@@ -47,6 +47,7 @@ input[type=number] { width:70px }
 .rc .r2 { margin:5px 0 4px; display:flex; flex-wrap:wrap; gap:4px }
 .bd { font-size:12px; padding:1px 7px; border-radius:5px; background:#173427; color:#8fe0b5; font-weight:600 } .bd.neg { background:#3a1d1d; color:#ffa3a3 }
 .rbar { height:4px; background:#0b0d11; border-radius:2px; overflow:hidden } .rbar div { height:100%; background:var(--acc) }
+.rx { background:none; border:0; color:var(--mute); cursor:pointer; padding:0 0 0 4px; font-size:12px } .rx:hover { color:var(--bad) }
 .rc .r0 { margin-top:4px; font-size:12px; color:var(--gold) }
 .rc .r3 { margin-top:4px; font-size:11.5px; color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis } #pins { background:#241f14; border:1px solid #4a3d1c }
 .strip b { font-size:12px } .strip .it { cursor:pointer } .strip .it:hover { color:var(--acc) }
@@ -107,12 +108,13 @@ body.mini #pins { display:block } body.mini #pins .it { display:block; padding:3
 <body>
 <header>
   <h1>원랜디 도우미</h1>
-  <span id="st" class="pill">연결 중…</span>
+  <span id="st" class="pill">연결 중…</span><span id="age" class="warn" style="font-size:12px"></span>
   <select id="owner" title="내 슬롯"></select>
   <span class="seg" id="mode"><button data-m="자동">자동</button><button data-m="물딜">물딜</button><button data-m="마딜">마딜</button></span>
   <a id="upd" class="pill" style="display:none;color:var(--gold);border-color:#6b5520;text-decoration:none" target="_blank"></a>
   <input id="q" type="text" class="full-only" placeholder="검색 (초성 OK, / 키)">
   <span class="spacer"></span>
+  <button class="ibtn full-only" id="report" title="게임엔 있는데 여기엔 안 보이는 유닛이 있을 때: 그 순간의 기록을 파일로 남겨요">안 잡힘 신고</button>
   <button class="ibtn full-only" id="openOverlay" title="게임 화면 위에 항상 떠 있는 작은 창 (창 모드/전체 창 모드에서만 보여요)">게임 위에 띄우기</button>
   <button class="ibtn full-only" id="openMini" title="작은 창으로 띄워 두기(두 번째 모니터용)">작게 보기</button>
   <button class="ibtn" id="openSet" title="설정">⚙</button>
@@ -259,6 +261,9 @@ function score(it, cur) {
 }
 
 // ───────── 그리기 ─────────
+const special = id => items[id] && !items[id].lowest && !items[id].recipes.length;   // 조합으로 못 만드는 재료
+const specialLack = pr => Object.keys(pr.miss).filter(m => special(+m)).map(m => nm(+m));
+let excluded = new Set(store.get('excluded', []));   // 사용자가 추천에서 뺀 유닛
 const lackText = miss => Object.entries(miss).map(([m, k]) => nm(+m) + (k > 1 ? '×' + k : '')).join(', ');
 const stepLabel = pr => pr.steps ? pr.steps + '단계' : '위습으로';   // 100%인데 중간 조합 0번 = 흔함선택위습으로 채움
 const stateText = x => x.ready ? '<span class="ok">바로 가능</span>' : x.pr.pct >= 1 ? `<span class="warn">${stepLabel(x.pr)}</span>`
@@ -315,7 +320,7 @@ function makePlan(cur) {
       const it = items[id];
       if (!it.recipes.length || it.lowest || it.rank < REC_FROM || it.rank >= REC_TO) continue;
       const p = { ...pool }, sim = simulate(id, p);
-      if (sim.pct < 1) continue;
+      if (sim.pct < 1 || excluded.has(id)) continue;
       const units = { ...p };
       for (const [k, v] of Object.entries(reserved)) units[k] = (units[k] || 0) + v;
       for (const [k, v] of Object.entries({ ...made, [id]: (made[id] || 0) + 1 })) units[k] = (units[k] || 0) + v;
@@ -336,21 +341,33 @@ function postSummary(warns, plan) {
   const st = x => x.ready ? '바로 가능' : x.pr.pct >= 1 ? stepLabel(x.pr) : Math.round(x.pr.pct * 100) + '%';
   const top = order.filter(id => counts[id] && items[id].rank >= REC_FROM && items[id].rank < REC_TO).map(id => nm(id) + (counts[id] > 1 ? '×' + counts[id] : ''));
   // 등급별: 보유 / 지금 가능 / 가까운 것(50%↑ 또는 N단계)
-  const grades = [];
+  const grades = [], info = {};
+  const addInfo = it => {   // 작은 창에서 유닛 이름을 누르면 보여 줄 조합식 요약
+    const craft = it.recipes.length && !it.lowest, lines = [it.name];
+    if (craft) {
+      const pr = progress(it.id);
+      lines.push('재료: ' + it.recipes.map(([m, k]) => `${nm(m)} ${Math.min(counts[m] || 0, k)}/${k}`).join(' + '));
+      if (pr.pct < 1) lines.push('부족(최하위): ' + lackText(pr.miss) + (specialLack(pr).length ? '  ⚠ 특수 재료: ' + specialLack(pr).join(', ') : ''));
+      else if (pr.seq.length) lines.push('조합 순서: ' + pr.seq.map(nm).concat(nm(it.id)).join(' → '));
+    } else if (usedIn[it.id]) lines.push('들어가는 조합: ' + usedIn[it.id].slice(0, 8).map(nm).join(', '));
+    info[nm(it.id) + '|' + it.grade.split(' ')[0]] = lines.join('\n');
+  };
   for (const g of groups) {
     const have = [], ready = [], near = [];
     for (const raw of g.items) {
       const it = items[raw.id]; if (!it) continue;
-      if (counts[it.id]) have.push(nm(it.id) + ' ' + counts[it.id]);
+      if (counts[it.id]) { have.push([nm(it.id), counts[it.id]]); addInfo(it); }
       if (!it.recipes.length || it.lowest) continue;
-      if (canCraft(it)) { ready.push(nm(it.id)); continue; }
+      if (canCraft(it)) { ready.push(nm(it.id)); addInfo(it); continue; }
       const pr = progress(it.id);
-      if (pr.pct >= 0.5) near.push([pr.pct, pr.pct >= 1 ? nm(it.id) + ' ' + stepLabel(pr) : nm(it.id) + ' ' + Math.round(pr.pct * 100) + '%']);
+      if (pr.pct >= 0.5) { near.push([pr.pct, [nm(it.id), pr.pct >= 1 ? stepLabel(pr) : Math.round(pr.pct * 100) + '%'], it]); }
     }
     near.sort((x, y) => y[0] - x[0]);
     if (have.length || ready.length || near.length)
-      grades.push({ g: g.name.split(' ')[0], gc: gcolor(g.name), have, ready, near: near.slice(0, 6).map(x => x[1]) });
+    { near.slice(0, 6).forEach(x => addInfo(x[2]));
+      grades.push({ g: g.name.split(' ')[0], gc: gcolor(g.name), have, ready, near: near.slice(0, 6).map(x => x[1]) }); }
   }
+  recList.slice(0, 6).forEach(x => addInfo(x.it));
   const sm = {
     mode, stats: CHECK.filter(k => t[k]).map(k => [k, +cur[k].toFixed(2), t[k]]),
     warns: warns.map(text),
@@ -360,7 +377,7 @@ function postSummary(warns, plan) {
       gains: x.gains.map(([k, d]) => `${k}${d > 0 ? '+' : ''}${d}`).join(' '), lack: x.ready || x.pr.pct >= 1 ? wildText(x.pr) : lackText(x.pr.miss), why: x.reason })),
     pins: [...pins].filter(id => items[id]).map(id => ({ n: nm(id), st: st({ it: items[id], pr: pinRes[id], ready: canCraft(items[id], counts) }) })),
     ready: order.filter(id => canCraft(items[id]) && items[id].rank >= REC_FROM && items[id].rank < REC_TO).map(nm),
-    grades, top, units: Object.keys(counts).filter(k => +k >= 0 && counts[k]).length };
+    grades, info, top, units: Object.keys(counts).filter(k => +k >= 0 && counts[k]).length };
   const js = JSON.stringify(sm);
   if (js !== lastSummary) { lastSummary = js; lastPostAt = Date.now(); fetch('/summary', { method: 'POST', body: js }).catch(() => {}); }
 }
@@ -370,7 +387,7 @@ function recCard(x) {
   const pc = Math.round(Math.min(x.pr.pct, 1) * 100), lack = lackText(x.pr.miss);
   const st = x.ready ? '<b class="ok">바로 가능</b>' : x.pr.pct >= 1 ? `<b class="warn">${stepLabel(x.pr)}</b>` : `<b>${pc}%</b>`;
   return `<div class="rc it" data-id="${x.it.id}" title="${esc(x.it.name)}${lack ? '\n부족: ' + esc(lack) : ''}">` +
-    `<div class="r1">${imgTag(x.it)}<span class="rn"><span class="star">★</span> ${esc(short(x.it.name))}</span><span class="rg" style="color:${gcolor(x.it.grade)}">${esc(x.it.grade.split(' ')[0])}</span><span class="rs">${st}</span></div>` +
+    `<div class="r1">${imgTag(x.it)}<span class="rn"><span class="star">★</span> ${esc(short(x.it.name))}</span><span class="rg" style="color:${gcolor(x.it.grade)}">${esc(x.it.grade.split(' ')[0])}</span><span class="rs">${st}</span><button class="rx" data-ex="${x.it.id}" title="이 유닛은 추천에서 빼기">✕</button></div>` +
     `<div class="r2">${x.gains.map(([k, d]) => `<span class="bd${d < 0 ? ' neg' : ''}">${k} ${d > 0 ? '+' : ''}${d}</span>`).join('')}</div>` +
     `<div class="rbar"><div style="width:${pc}%"></div></div>` +
     (x.reason ? `<div class="r0">💡 ${esc(x.reason)}</div>` : '') +
@@ -410,7 +427,7 @@ function render() {
     const it = items[id];
     if (!it.recipes.length || it.lowest || pins.has(id) || it.rank < REC_FROM || it.rank >= REC_TO) continue;
     const pr = progress(id);
-    if (pr.pct < 0.6) continue;
+    if (pr.pct < 0.6 || specialLack(pr).length || excluded.has(id)) continue;
     const r = score(it, cur);
     if (!r.stat) continue;
     const ready = canCraft(it);
@@ -471,7 +488,8 @@ function renderGrid() {
       const pr = craft ? progress(it.id) : null, pc = pr ? Math.round(pr.pct * 100) : 0;
       const tip = esc(it.name) + (it.cat ? ` [${it.cat}]` : '') + (craft ? `\n\n진행률 ${pc}%` + (pc >= 100 && !ready ? ` (중간 조합 ${pr.steps}번)` : '') +
         '\n재료\n' + it.recipes.map(([m, k]) => `${(counts[m] || 0) >= k ? '✔' : '✘'} ${nm(m)} ${Math.min(counts[m] || 0, k)}/${k}`).join('\n') +
-        (Object.keys(pr.miss).length ? `\n\n부족한 재료 (최하위)\n${lackText(pr.miss)}` : '') : '');
+        (Object.keys(pr.miss).length ? `\n\n부족한 재료 (최하위)\n${lackText(pr.miss)}` : '') +
+        (specialLack(pr).length ? `\n\n⚠ 특수 재료 필요 (조합으로 못 만듦): ${specialLack(pr).join(', ')}` : '') : '');
       const label = !craft ? '' : ready ? '<span class="pc full">가능</span>' : pc >= 100 ? `<span class="pc hi">${stepLabel(pr)}</span>` : `<span class="pc">${pc}%</span>`;
       const name = query ? esc(it.name).replace(new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'), '<mark>$&</mark>') : esc(it.name);
       rows.push({ idx, sort: (pr ? pr.pct : 0) + (ready ? 1 : 0), steps: pr ? pr.steps : 0, n,
@@ -590,6 +608,7 @@ function openRecipe(id, push = true) {
   const up = (usedIn[id] || []).map(u => card(u)).join('');
   $('mbox').innerHTML =
     `<div class="mh">${mstack.length > 1 ? '<button class="ibtn" data-act="back">←</button>' : ''}<b>${esc(it.name)} <span style="color:${gcolor(it.grade)}">- ${esc(it.grade)}</span></b>` +
+    (craft && it.rank >= REC_FROM && it.rank < REC_TO ? `<button class="ibtn" data-ex="${id}">${excluded.has(id) ? '추천에 다시 넣기' : '추천에서 빼기'}</button>` : '') +
     (craft ? `<button class="ibtn" data-act="pin">${pinned ? '📌 찜 해제' : '📌 찜하기'}</button>` : '') +
     `<span class="${n ? 'ok' : 'dim'}">보유 ${n}</span><button class="ibtn" data-act="close">✕</button></div>` +
     (it.descr ? `<div class="sec">${esc(it.descr)}</div>` : '') +
@@ -598,6 +617,7 @@ function openRecipe(id, push = true) {
     (steps && !ready ? `<div class="sec"><h4>${pr.pct >= 1 ? '조합 순서' : '지금 할 수 있는 중간 조합'}</h4><ol class="steps">${steps}</ol></div>` : '') +
     (pr && wildText(pr) ? `<div class="sec warn">${esc(wildText(pr))}</div>` : '') +
     (pr && wispsNeeded(pr.miss) ? `<div class="sec dim">부족한 흔함을 랜덤위습으로만 채우면 약 <b class="warn">${wispsNeeded(pr.miss)}개</b> 더 뽑아야 해요</div>` : '') +
+    (pr && specialLack(pr).length ? `<div class="sec bad">⚠ 특수 재료 필요: <b>${esc(specialLack(pr).join(', '))}</b> — 조합으로 못 만드는 재료라, 이게 없으면 추천에 올리지 않아요</div>` : '') +
     (lack.length ? `<div class="sec"><h4>부족한 재료 (최하위)</h4><div class="mats">${lack.map(([m, k]) => card(+m, null).replace('<div class="hv">', `<div class="hv bad">${k}개 부족 `)).join('')}</div></div>` : '') +
     (up ? `<div class="sec"><h4>이 유닛이 들어가는 상위 조합</h4><div class="mats">${up}</div></div>` : '');
   $('modal').hidden = false;
@@ -660,6 +680,7 @@ function openSettings() {
     `<label><input type="checkbox" id="setWisp" ${selWisp ? 'checked' : ''}> 흔함선택위습을 흔함 대신 쓰는 걸로 진행률 계산</label></div>` +
     `<div class="sec"><label><input type="checkbox" id="setStartup" ${srv.startup ? 'checked' : ''}> 윈도우 켤 때 자동 실행 (창 없이 뒤에서)</label>` +
     ` <button class="ibtn" data-act="quit" style="float:right">프로그램 끄기</button><div class="dim" style="margin-top:4px">버전 ${esc(srv.version || '')}${srv.update ? ` · <a href="${esc(srv.update.url)}" target="_blank" style="color:var(--gold)">새 버전 ${esc(srv.update.ver)} 받기</a>` : ''} · 맵 ${esc(srv.map_version || '')}</div></div>` +
+    (excluded.size ? `<div class="sec"><h4>추천에서 뺀 유닛 (누르면 되돌림)</h4>${[...excluded].filter(id => items[id]).map(id => `<button class="ibtn" data-ex="${id}" style="margin:2px">${esc(nm(id))} <span class="dim">${esc(items[id].grade.split(' ')[0])}</span> ↩</button>`).join('')}</div>` : '') +
     `<div class="sec"><h4>지난 판 기록 <button class="ibtn" data-act="csv" style="float:right">엑셀(CSV)로 저장</button></h4><div id="hstat"></div><div id="hist" class="dim">불러오는 중…</div></div>` +
     `<div class="sec dim">폰에서 보려면 폴더의 <b>폰으로도 보기.bat</b> 로 켜고, 검은 창에 나온 주소를 같은 와이파이의 폰에서 열면 돼요.</div>`;
   $('settings').hidden = false;
@@ -692,6 +713,9 @@ document.addEventListener('click', e => {
   if (act === 'graph') { const el = $('graph' + e.target.dataset.i); el.innerHTML = el.innerHTML ? '' : graphSvg(hist[+e.target.dataset.i]); return; }
   if (act === 'reset') { targets = structuredClone(DEFAULTS); store.set('targets', targets); render(); return openSettings(); }
   const fold = e.target.closest('.cell.fold'); if (fold) { const g = fold.dataset.g; openGroups.has(g) ? openGroups.delete(g) : openGroups.add(g); return renderGrid(); }
+  const ex = e.target.closest('[data-ex]');
+  if (ex) { const id = +ex.dataset.ex; excluded.has(id) ? excluded.delete(id) : excluded.add(id); store.set('excluded', [...excluded]);
+    toast(excluded.has(id) ? `${nm(id)}: 추천에서 뺐어요 (⚙ 설정에서 되돌릴 수 있어요)` : `${nm(id)}: 다시 추천에 넣었어요`); render(); if (!$('settings').hidden) openSettings(); return; }
   const q = e.target.closest('.q, .strip .it, #minilist .it'); if (q) { mstack = []; return openRecipe(+q.dataset.id); }
   const mat = e.target.closest('#mbox .mat'); if (mat) return openRecipe(+mat.dataset.id);
 });
@@ -741,11 +765,12 @@ async function init() {
   $('owner').onchange = e => fetch('/owner?n=' + e.target.value).then(tick);
   $('q').oninput = e => { query = e.target.value.trim(); renderGrid(); };
   $('openSet').onclick = openSettings;
+  $('report').onclick = () => { const n = prompt('게임엔 있는데 안 잡히는 유닛 이름을 적어 주세요 (예: 라분)'); if (n) fetch('/diag?name=' + encodeURIComponent(n)).then(() => toast('기록하는 중… 잠깐만요')); };
   $('openOverlay').onclick = () => fetch('/overlay', { method: 'POST' }).then(() => toast('게임 위 작은 창을 띄웠어요. 끌어서 옮기고 ✕로 닫아요'));
   $('openMini').onclick = () => window.open('/?mini', 'ordr-mini', 'width=380,height=720');
   let rz; window.addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(renderGrid, 150); });
   render();
-  tick(); setInterval(tick, 1000);
+  tick(); setInterval(tick, 400);
 }
 
 let lastKey = '', lastNotice = null, dataVer = 0;
@@ -765,6 +790,8 @@ async function tick() {
     // 작은 창에 '페이지 살아 있음' 신호: 내용이 안 바뀌어도 5초마다 다시 보낸다
     if (lastSummary && Date.now() - lastPostAt > 5000) { lastPostAt = Date.now(); fetch('/summary', { method: 'POST', body: lastSummary }).catch(() => {}); }
     if (s.update) { $('upd').style.display = ''; $('upd').href = s.update.url; $('upd').textContent = `새 버전 ${s.update.ver} 받기`; }
+    const age = s.ts ? Date.now() / 1000 - s.ts : 0;   // 서버가 마지막으로 메모리를 읽은 뒤 지난 시간
+    $('age').textContent = s.status.startsWith('연결됨') && age >= 3 ? `${Math.round(age)}초 전 갱신` : '';
     const key = JSON.stringify(s.counts);
     if (key !== lastKey) {
       if (!lastKey || !Object.keys(counts).length) prevCounts = null;   // 첫 연결·새 판: 알림 폭탄 방지

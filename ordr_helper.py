@@ -11,7 +11,7 @@
 import ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.2.1'
+VERSION = '1.3.0'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -28,7 +28,10 @@ OFF_TYPE, OFF_OWNER, OFF_GONE = 0x70, 0x58, 0x274   # typeId, owner slot, 1 = �
 SZ = 0x400             # 객체에서 읽는 길이 (패치로 필드가 밀려도 넉넉하게)
 CHUNK = 1 << 20           # ponytail: 1MB reads + 10ms nap every 16MB; tune if the game hitches
 NAP_EVERY, NAP = 16, 0.01
-SWEEP_MB = 64             # 매 틱 나머지 메모리도 이만큼씩 다시 훑는다 (새 유닛 풀 잡기)
+TICK = 0.5                # 유닛 구역(1~2MB)은 0.5초마다 다시 읽는다
+SMALL = 1 << 20           # 유닛은 64KB~1MB 짜리 작은 구역에 생긴다
+SMALL_MB, BIG_MB = 24, 8  # 틱마다 추가로 훑는 양: 유닛 없던 작은 구역(빨리 한 바퀴) / 큰 구역(천천히)
+PIECE = 8 << 20           # 큰 구역은 이만큼씩 잘라서 훑는다
 # 위습 종류: sions 도우미엔 없어서 음수 id 로 따로 센다 (페이지가 이름을 붙임)
 WISP_CODES = {'e018': -1, 'e017': -2, 'e016': -3, 'e019': -4, 'e01A': -5}
 
@@ -150,6 +153,7 @@ k32.OpenProcess.restype = W.HANDLE
 k32.ReadProcessMemory.argtypes = [W.HANDLE, ctypes.c_ulonglong, ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
 k32.VirtualQueryEx.argtypes = [W.HANDLE, ctypes.c_ulonglong, ctypes.POINTER(MBI), ctypes.c_size_t]
 k32.CloseHandle.argtypes = [W.HANDLE]
+k32.GetExitCodeProcess.argtypes = [W.HANDLE, ctypes.POINTER(W.DWORD)]
 psapi.EnumProcessModulesEx.argtypes = [W.HANDLE, ctypes.POINTER(ctypes.c_void_p), W.DWORD, ctypes.POINTER(W.DWORD), W.DWORD]
 
 
@@ -201,6 +205,10 @@ class Game:
     def close(self):
         k32.CloseHandle(self.h)
 
+    def alive(self):   # tasklist 를 매번 돌리면 0.2초씩 걸린다 -> 핸들로 바로 확인
+        code = W.DWORD()
+        return bool(k32.GetExitCodeProcess(self.h, ctypes.byref(code))) and code.value == 259
+
     def read(self, addr, n):
         buf = ctypes.create_string_buffer(n)
         got = ctypes.c_size_t()
@@ -217,7 +225,7 @@ class Game:
                 break
         return out
 
-    def scan(self, base, size, found):
+    def scan(self, base, size, found, detail=None):
         hit = False
         for off in range(0, size, CHUNK):
             b = self.read(base + off, min(CHUNK, size - off))
@@ -235,6 +243,9 @@ class Game:
                         self.objs += 1
                         if len(self.samples) < 400: self.samples.append(o)
                         sid = CODES.get(o[OFF_TYPE:OFF_TYPE + 4])
+                        if detail is not None:
+                            detail.append((struct.unpack_from('<I', o, OFF_OWNER)[0], o[OFF_TYPE:OFF_TYPE + 4][::-1].decode('latin1', 'replace'),
+                                           struct.unpack_from('<I', o, OFF_GONE)[0], sid, hex(base + off + i)))
                         if sid is not None and struct.unpack_from('<I', o, OFF_GONE)[0] == 0:
                             found.append((struct.unpack_from('<I', o, OFF_OWNER)[0], sid))
                 i = b.find(self.vt, i + 1)
@@ -276,6 +287,28 @@ def publish(found):
     state.update(counts=counts, players=players, ts=time.time())
 
 
+def write_diag(g, regions):
+    """'있는데 안 잡혀요' 신고: 지금 메모리에 있는 유닛 객체를 전부(작은 구역 전체) 적어 둔다."""
+    name = state.pop('diag_req')
+    detail = []
+    for r in sorted(regions):
+        if r[1] <= SMALL * 4:
+            g.scan(*r, [], detail)
+    me = state['owner']
+    out = {'time': time.strftime('%Y-%m-%d %H:%M:%S'), 'reported': name, 'owner': me, 'players': state['players'],
+           'offsets': [OFF_TYPE, OFF_OWNER, OFF_GONE], 'counts_shown': state['counts'], 'map': state['map_version'],
+           # 내 슬롯의 모든 유닛 객체: [코드, 제거표시, 짝지어진 sions id, 주소]
+           'mine': [[c, gone, sid, addr] for o, c, gone, sid, addr in detail if o == me],
+           # 슬롯별 코드 개수 (살아 있는 것만)
+           'by_owner': {str(o): {} for o in {d[0] for d in detail}}}
+    for o, c, gone, sid, addr in detail:
+        if gone == 0:
+            out['by_owner'][str(o)][c] = out['by_owner'][str(o)].get(c, 0) + 1
+    path = os.path.join(HERE, time.strftime('diag-%m%d-%H%M%S.json'))
+    json.dump(out, open(path, 'w', encoding='utf-8'), ensure_ascii=False)
+    state['notice'] = f'신고 기록을 남겼어요: {os.path.basename(path)} (Claude에게 이 파일을 알려 주세요)'
+
+
 def tracker():
     while True:
         pid = find_pid()
@@ -306,34 +339,50 @@ def tracker():
                     g.scan(*r, found)
             publish(found)
             state['status'] = '연결됨'
-            sweep, fresh, empty = [], {}, 0
-            while find_pid() == pid:
-                # 로비 / 로딩 / 판 끝: 유닛이 없으면 판이 새로 시작될 때 전체를 다시 훑는다
-                empty = empty + 1 if not state['players'] else 0
-                if empty > 10:
+            small_q, big_q, fresh, empty_since = [], [], {}, None
+            while g.alive():
+                # 로비 / 로딩 / 판 끝: 유닛이 6초 넘게 없으면 판이 새로 시작될 때 전체를 다시 훑는다
+                empty_since = (empty_since or time.time()) if not state['players'] else None
+                if empty_since and time.time() - empty_since > 6:
                     end_game()
                     state['status'] = '게임 시작 기다리는 중'
                     break
                 now = g.regions()
                 for r in now - seen:
-                    fresh[r] = 15  # 새 메모리 구역은 첫 유닛이 몇 틱 늦게 들어올 수 있다
+                    fresh[r] = 30  # 새 메모리 구역은 첫 유닛이 몇 틱 늦게 들어올 수 있다
                 fresh = {r: n - 1 for r, n in fresh.items() if n > 0 and r in now}
                 todo = (hot & now) | set(fresh)
                 seen = now
-                if not sweep:
-                    sweep = sorted(now - hot)
-                budget = SWEEP_MB << 20
-                while sweep and budget > 0:
-                    r = sweep.pop()
+                # 유닛이 없던 작은 구역: 새 유닛이 여기 생기면 놓치므로 몇 초마다 한 바퀴 돈다
+                if not small_q:
+                    small_q = sorted(r for r in now - hot if r[1] <= SMALL)
+                budget = SMALL_MB << 20
+                while small_q and budget > 0:
+                    r = small_q.pop()
                     if r in now:
                         todo.add(r); budget -= r[1]
+                # 큰 구역은 잘라서 천천히 (유닛이 있을 가능성이 낮다)
+                if not big_q:
+                    big_q = [(r, off) for r in sorted(now - hot) if r[1] > SMALL for off in range(0, r[1], PIECE)]
+                pieces, budget = [], BIG_MB << 20
+                while big_q and budget > 0:
+                    r, off = big_q.pop()
+                    if r in now and r not in todo:
+                        pieces.append((r, off)); budget -= PIECE
                 found, newhot = [], set()
                 for r in todo:
                     if g.scan(*r, found):
                         newhot.add(r)
-                hot = newhot  # hot ⊆ todo
+                for r, off in pieces:
+                    part = []
+                    if g.scan(r[0] + off, min(PIECE + SZ, r[1] - off), part):
+                        newhot.add(r)   # 다음 틱부터 구역 전체를 매번 읽는다
+                        found += part
+                hot = newhot
                 publish(found)
-                time.sleep(2)
+                if state.get('diag_req'):
+                    write_diag(g, now)
+                time.sleep(TICK)
         except Exception as e:
             state['status'] = f'오류: {e!r}'
             traceback.print_exc()
@@ -395,7 +444,7 @@ def overlay():
         txt.config(font=('Malgun Gothic', f), width=60)   # 글자 수 기준이라 글자가 커지면 창도 같이 커진다
         for tag, kw in {'dim': {'foreground': DIM}, 'ok': {'foreground': '#4cc38a'}, 'warn': {'foreground': '#f0b43c'},
                         'bad': {'foreground': '#ef5b5b'}, 'gold': {'foreground': '#ffd166'}, 'b': {'font': ('Malgun Gothic', f, 'bold')},
-                        'h': {'font': ('Malgun Gothic', f + 1, 'bold')}, 'new': {'background': '#3d5a2a', 'foreground': '#ffffff'}}.items():
+                        'h': {'font': ('Malgun Gothic', f + 1, 'bold')}, 'fg': {'foreground': FG}, 'new': {'background': '#3d5a2a', 'foreground': '#ffffff'}}.items():
             txt.tag_configure(tag, **kw)
         draw(last['s'])
 
@@ -435,8 +484,28 @@ def overlay():
         y = txt.yview()[0]
         txt.config(state='normal'); txt.delete('1.0', 'end')
         put = lambda t, *tags: txt.insert('end', t, tags)
-        now = time.time()
+        now, info, n_tags = time.time(), s.get('info') or {}, [0]
+
+        def unit(text, key, *tags):   # 유닛 이름: 누르면 맨 위에 조합식이 펼쳐진다 (다시 누르면 닫힘)
+            if key not in info:
+                return put(text, *tags)
+            tag = f'u{n_tags[0]}'; n_tags[0] += 1
+            txt.insert('end', text, tags + (tag,))
+            txt.tag_bind(tag, '<Button-1>', lambda e, k=key: (flags.update(sel=None if flags.get('sel') == k else k), draw(last['s'])))
+
+        def units(names, grade, tag, sep_tag):
+            for i, n in enumerate(names):   # 이름만, 또는 [이름, 꼬리표("7", "80%", "2단계")]
+                base, label = (n, '') if isinstance(n, str) else (n[0], ' ' + str(n[1]))
+                unit(base + label, f'{base}|{grade}', 'new' if tag == 'ok' and last['new'].get(base, 0) > now else tag)
+                put(', ' if i < len(names) - 1 else '\n', sep_tag)
+
         title.config(text=f"원랜디 도우미 · {s.get('status', '')} · {s.get('mode', '')}" + (' · 클릭 통과 중(Ctrl+Shift+O)' if flags['click'] else ''))
+        sel = flags.get('sel')
+        if sel and sel in info:
+            put(f"▣ {sel.replace('|', ' · ')}\n", 'gold', 'b')
+            for line in info[sel].split('\n'):
+                put('   ' + line + '\n')
+            put('\n')
         for k, v, t in s.get('stats', []):
             r = v / t if t else 1
             put(f'{k} ', 'b'); put(f'{v}/{t}   ', 'ok' if r >= 1 else 'warn' if r >= 0.6 else 'bad')
@@ -446,26 +515,20 @@ def overlay():
         if s.get('plan'):
             put('▶ 계획 ', 'gold', 'b'); put(s['plan']['steps'], 'gold'); put(f"   ({s['plan']['result']})\n", 'dim')
         for r in s.get('recs', [])[: (6 if oc['full'] else 3)]:
-            put('★ ', 'gold'); put(r['n'], 'b'); put(f" {r['g']} ", color(r['gc'])); put(f"{r['gains']}  "); put(r['st'], 'ok' if r['st'] == '바로 가능' else 'warn')
+            put('★ ', 'gold'); unit(r['n'], f"{r['n']}|{r['g']}", 'b'); put(f" {r['g']} ", color(r['gc'])); put(f"{r['gains']}  "); put(r['st'], 'ok' if r['st'] == '바로 가능' else 'warn')
             put((f"  {r['why']}" if r.get('why') and oc['full'] else ''), 'gold')
             put((f"  부족: {r['lack']}" if r['lack'] and oc['full'] else '') + '\n', 'dim')
         for p in s.get('pins', []):
             put('찜 ', 'warn'); put(f"{p['n']} · {p['st']}\n")
-        isnew = lambda n: last['new'].get(n, 0) > now
         if not oc['full']:
             if s.get('ready'):
-                put('지금 가능: ', 'ok')
-                for i, n in enumerate(s['ready']):
-                    put(n, 'new' if isnew(n) else 'ok'); put(', ' if i < len(s['ready']) - 1 else '\n', 'ok')
+                put('지금 가능: ', 'ok'); put(', '.join(s['ready']) + '\n', 'ok')
         else:
             for g in s.get('grades', []):
                 put(f"\n{g['g']}", color(g['gc']), 'h'); put('\n')
-                if g['have']: put('  보유 ', 'dim'); put(', '.join(g['have']) + '\n')
-                if g['ready']:
-                    put('  가능 ', 'dim')
-                    for i, n in enumerate(g['ready']):
-                        put(n, 'new' if isnew(n) else 'ok'); put(', ' if i < len(g['ready']) - 1 else '\n', 'ok')
-                if g['near']: put('  가까움 ', 'dim'); put(', '.join(g['near']) + '\n', 'warn')
+                if g['have']: put('  보유 ', 'dim'); units(g['have'], g['g'], 'fg', 'fg')
+                if g['ready']: put('  가능 ', 'dim'); units(g['ready'], g['g'], 'ok', 'ok')
+                if g['near']: put('  가까움 ', 'dim'); units(g['near'], g['g'], 'warn', 'warn')
         if s.get('age', 0) > 15 and s.get('stats'):
             put('\n도우미 페이지가 닫혀 있어서 갱신이 멈췄어요 — 브라우저에서 127.0.0.1:8765 를 열어 두세요\n', 'bad')
         lines = int(txt.index('end-1c').split('.')[0])
@@ -567,6 +630,10 @@ class Handler(BaseHTTPRequestHandler):
             self._json({**summary, 'status': state['status'], 'age': round(time.time() - game['sum_ts'])})
         elif path == '/startup' and q in ('on=1', 'on=0'):
             set_startup(q == 'on=1'); self._json({'startup': state['startup']})
+        elif path == '/diag':
+            import urllib.parse
+            state['diag_req'] = urllib.parse.unquote(q[5:]) if q.startswith('name=') else '?'
+            self._send(200, b'ok', 'text/plain')
         elif path == '/quit':
             self._send(200, b'bye', 'text/plain'); threading.Timer(0.3, lambda: os._exit(0)).start()
         elif path == '/history':
