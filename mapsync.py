@@ -151,6 +151,60 @@ def map_units(path):
     return out
 
 
+def _objects(d, strings, extra):
+    """w3u / w3a 공통: {코드: {필드: 값}} (레벨이 여럿이면 첫 값). extra: w3a 는 필드마다 레벨·데이터 칸이 더 있다."""
+    pos = [0]
+
+    def i32():
+        v = struct.unpack_from('<i', d, pos[0])[0]; pos[0] += 4; return v
+
+    def raw4():
+        v = d[pos[0]:pos[0] + 4].decode('latin1'); pos[0] += 4; return v
+
+    ver, out = i32(), {}
+    for _table in range(2):
+        for _ in range(i32()):
+            orig, new = raw4(), raw4()
+            f = out.setdefault(new if new != '\0\0\0\0' else orig, {'_orig': orig})
+            for _ in range(i32() if ver >= 3 else 1):
+                if ver >= 3: i32()
+                for _ in range(i32()):
+                    mid, typ = raw4(), i32()
+                    if extra: pos[0] += 8
+                    if typ in (0, 1, 2):
+                        v = i32()
+                    else:
+                        e = d.index(b'\0', pos[0]); v = d[pos[0]:e].decode('utf-8', 'replace'); pos[0] = e + 1
+                        m = re.fullmatch(r'TRIGSTR_0*(\d+)', v)
+                        if m: v = CLR.sub('', strings.get(int(m.group(1)), v))
+                    i32()
+                    f.setdefault(mid, v)
+    return out
+
+
+def map_combos(path, mapping):
+    """조합 버튼: {결과 sions id: [[버튼을 가진 유닛 코드, 단축키], ...]}.
+    유닛 스킬 중 툴팁이 '조합(Z)'·'변화(B)' 인 것. 설명에 '▶ 킹 - 전설' / '변화 유닛 : 베이비5 - 변화' 로 결과 유닛 이름이 적혀 있다.
+    다른 유닛을 찍어야 하는 조합(Auhf 기반)은 뺀다."""
+    mpq = MPQ(path)
+    wts = mpq.read('war3map.wts').decode('utf-8', 'replace')
+    strings = {int(m.group(1)): m.group(2).strip() for m in re.finditer(r'STRING (\d+)[^{]*\{\r?\n(.*?)\r?\n\}', wts, re.S)}
+    units, abil = _objects(mpq.read('war3map.w3u'), strings, False), _objects(mpq.read('war3map.w3a'), strings, True)
+    by_name = {}
+    for code, n in map_units(path).items():
+        if code in mapping: by_name.setdefault(n, mapping[code])
+    out = {}
+    for code, f in units.items():
+        for a in str(f.get('uabi') or '').split(',') if code in mapping else ():
+            ab = abil.get(a) or {}
+            key = re.fullmatch(r'(?:조합|변화)\(([A-Z])\)', str(ab.get('atp1') or '').strip())
+            res = re.search(r'(?:▶|변화 유닛\s*:)\s*([^\r\n]+)', str(ab.get('aub1') or ''))
+            sid = res and by_name.get(res.group(1).strip())
+            if key and sid is not None and ab['_orig'] != 'Auhf' and [code, key.group(1)] not in out.setdefault(sid, []):
+                out[sid].append([code, key.group(1)])
+    return {k: v for k, v in out.items() if v}
+
+
 # ───────── 짝짓기 ─────────
 GRADE = {'흔함': '흔함', '안흔함': '안흔함', '특별': '특별함', '희귀': '희귀함', '전설': '전설', '히든': '히든',
          '왜곡': '왜곡', '변화': '변화', '세라핌': '세라핌', '초월': '초월함', '제한': '제한됨', '불멸': '불멸의',
@@ -158,7 +212,8 @@ GRADE = {'흔함': '흔함', '안흔함': '안흔함', '특별': '특별함', '�
 WISP = {'e0IX': 0}   # 랜덤위습 -> 위습
 # 이름이 달라 자동으로 못 짝짓는 것 (sions 쪽 라벨이 다름). 코드가 버전 간에 유지된다고 본다.
 OVERRIDE_NAMES = {'h02N': '모리아', 'h05X': '레일리(히든)', 'h05Y': '고대의 배', 'h060': '해적선', 'h04S': '초월쿠마',
-                  'H0AA': '베가펑크', 'H0BK': '니카 [루피]'}
+                  'H0AA': '베가펑크', 'H0BK': '니카 [루피]',
+                  'H0B3': '스네이크맨'}   # 스네이크맨의 변신 형태(루피-블랙맘바): '루피'로 짝지어지면 변신할 때마다 유닛이 바뀐 것처럼 보인다
 _strip = lambda s: re.sub(r'[^가-힣A-Za-z]', '', s).lower()
 
 

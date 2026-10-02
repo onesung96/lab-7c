@@ -11,7 +11,7 @@
 import ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.6.3'
+VERSION = '1.6.4'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -71,9 +71,23 @@ state = {'status': '워크3 기다리는 중', 'counts': {}, 'players': {}, 'ts'
          'owner': cfg['owner'], 'auto': cfg['auto'], 'managed': [], 'notice': '', 'data_ver': 1,
          'map_version': cfg['map_version'], 'version': VERSION, 'frozen': FROZEN, 'update': None, 'startup': False}
 apply_mapping(json.load(open(res_or_local('mapping.json'), encoding='utf-8')))
+COMBOS = {}   # 버튼으로 조합하는 유닛: {결과 sions id: [[버튼을 가진 유닛 코드, 단축키], ...]}
+
+
+def apply_combos(c):
+    global COMBOS
+    COMBOS = {int(k): v for k, v in c.items()}
+    state['combos'] = sorted(COMBOS)
+
+
+try:
+    apply_combos(json.load(open(res_or_local('combos.json'), encoding='utf-8')))
+except Exception:
+    apply_combos({})
 SIONS = b'{}'
 summary = {}           # 페이지가 계산해서 보내 주는 요약 (작은 창·판 기록용)
-game = {'start': None, 'timeline': [], 'tl_ts': 0, 'sum_ts': 0, 'names': []}   # names: [(슬롯, 이름)] 사람만 이름이 있다
+game = {'start': None, 'timeline': [], 'tl_ts': 0, 'sum_ts': 0}
+LIVE = {'g': None}     # 지금 붙어 있는 게임 (페이지에서 조합을 누르면 쓴다)
 last_hot_bases = set()   # 지난 판에 유닛이 있던 메모리 구역: 다음 판 첫 스캔에서 먼저 본다
 last_world = {'base': None}   # 유닛 목록을 가진 물체가 있던 구역: 다음에 먼저 본다
 
@@ -111,6 +125,9 @@ def check_map_update():
         if len(mp) < 100:
             raise ValueError(f'짝지은 유닛이 {len(mp)}개뿐')
         json.dump(mp, open(os.path.join(HERE, 'mapping.json'), 'w', encoding='utf-8'), ensure_ascii=False)
+        combos = mapsync.map_combos(path, mp)
+        json.dump(combos, open(os.path.join(HERE, 'combos.json'), 'w', encoding='utf-8'), ensure_ascii=False)
+        apply_combos(combos)
         json.dump(data, open(SIONS_CACHE, 'w', encoding='utf-8'), ensure_ascii=False)
         cfg.update(map_version=ver, sions_url=url); save_cfg()
         SIONS = json.dumps(data, ensure_ascii=False).encode()
@@ -206,6 +223,9 @@ class Game:
         self.wf_vt = struct.pack('<Q', wf) if wf else None
         pl = self.vtable_of(img, base, b'CPlayerWar3')
         self.pl_vt = struct.pack('<Q', pl) if pl else None
+        tt, sel = self.vtable_of(img, base, b'CTextTagManager'), self.vtable_of(img, base, b'CSelectionWar3')
+        self.tt_vt, self.sel_vt = tt and struct.pack('<Q', tt), sel and struct.pack('<Q', sel)
+        self.pl_off, self.tt = None, []   # 내 플레이어를 가리키는 칸의 위치, CTextTagManager 주소들
         self.world = None        # (CWorldFrameWar3 주소, 유닛 목록 {개수, 주소, 용량} 의 위치)
 
     @staticmethod
@@ -270,9 +290,8 @@ class Game:
                 i = d.find(self.wf_vt, i + 1)
         return None
 
-    def world_units(self):
-        """게임이 가진 유닛 목록을 그대로 읽는다 -> [(주인, sions id)], 목록이 사라졌으면 None.
-        메모리를 훑지 않아서 빠짐이 없고, 한 번에 수백 KB 만 읽는다."""
+    def unit_ptrs(self):
+        """게임의 유닛 목록에 든 주소들. 목록이 사라졌으면 None."""
         obj, off = self.world
         d = self.read(obj, off + 24)
         if not d or len(d) < off + 24 or d[:8] != self.wf_vt:
@@ -280,13 +299,51 @@ class Game:
         cnt, ptr, cap = struct.unpack_from('<I4xQI', d, off)
         if cnt > cap or cap > 200000:
             return None
-        found, self.samples = [], []
         if not cnt:
-            return found
+            return ()
         a = self.read(ptr, cnt * 8)
-        if not a or len(a) < cnt * 8:
+        return struct.unpack(f'<{cnt}Q', a) if a and len(a) == cnt * 8 else None
+
+    def local_player(self):
+        """내 플레이어(CPlayerWar3) 주소. CWorldFrameWar3 안에 플레이어를 가리키는 칸이 딱 하나 있고 그게 나다
+        (3.0.0.24268 에선 +0x2c8). 위치는 박아 두지 않고 내용으로 찾는다."""
+        d = self.pl_vt and self.read(self.world[0], 0x800) or b''
+        for off in ([self.pl_off] if self.pl_off else range(8, len(d) - 7, 8)):
+            p = struct.unpack_from('<Q', d, off)[0] if off + 8 <= len(d) else 0
+            if 0x10000 < p < 0x7FFFFFFFFFFF and p % 8 == 0 and self.read(p, 8) == self.pl_vt:
+                self.pl_off = off
+                return p
+        return None
+
+    def local_slot(self):
+        p = self.local_player()
+        s = p and self.read(p + OFF_SLOT, 1)
+        return s[0] if s and s[0] < 24 else None
+
+    def view_matrix(self):
+        """월드 좌표 -> 화면 변환 행렬(4x4, [x y z 1]·M). 떠다니는 글자를 그리는 CTextTagManager 가 들고 있다.
+        카메라가 보는 점을 넣으면 깊이가 카메라 거리로 나와야 진짜다 (아니면 None: 엉뚱한 곳을 누르지 않는다)."""
+        cam = self.read(self.world[0] + OFF_CAM, 8)
+        c = cam and self.read(struct.unpack('<Q', cam)[0], OFF_CAM_DIST + 4)
+        if not c or len(c) < OFF_CAM_DIST + 4:
             return None
-        for q in struct.unpack(f'<{cnt}Q', a):
+        tx, ty, tz = struct.unpack_from('<3f', c, OFF_CAM_TARGET)
+        dist = struct.unpack_from('<f', c, OFF_CAM_DIST)[0]
+        for a in self.tt:
+            m = self.read(a + OFF_VP, 64)
+            M = m and len(m) == 64 and struct.unpack('<16f', m)
+            if M and all(v == v and abs(v) < 1e7 for v in M) and dist > 100 and abs(tx * M[3] + ty * M[7] + tz * M[11] + M[15] - dist) < dist * 0.02:
+                return M
+        return None
+
+    def world_units(self):
+        """게임이 가진 유닛 목록을 그대로 읽는다 -> [(주인, sions id)], 목록이 사라졌으면 None.
+        메모리를 훑지 않아서 빠짐이 없고, 한 번에 수백 KB 만 읽는다."""
+        ptrs = self.unit_ptrs()
+        if ptrs is None:
+            return None
+        found, self.samples = [], []
+        for q in ptrs:
             o = self.read(q, SZ)
             if not o or len(o) < SZ or o[:8] != self.vt:
                 continue
@@ -298,8 +355,9 @@ class Game:
 
     def find_names(self):
         """플레이어 이름 [(슬롯, 이름)]. CPlayerWar3: 슬롯 번호 +0x6a, 이름 주소 +0xa0, 길이 +0xa8 (3.0.0.24268).
-        사람 플레이어만 이름이 있다. 1MB 이하 구역만 훑어서 6초쯤 걸린다 -> 판마다 한 번만."""
-        out, naps = [], 0
+        사람 플레이어만 이름이 있다. 1MB 이하 구역만 훑어서 6초쯤 걸린다 -> 판마다 한 번만.
+        같은 길에 CTextTagManager(화면 변환 행렬을 가진 물체)도 찾아 둔다."""
+        out, naps, tt = [], 0, []
         for base, size in sorted(self.regions()):
             if size > 1 << 20 or not self.pl_vt:
                 continue
@@ -315,6 +373,12 @@ class Game:
                     if nm and len(nm) == n and d[i + 0x6a] < 24:
                         out.append((d[i + 0x6a], nm.decode('utf-8', 'replace')))
                 i = d.find(self.pl_vt, i + 1)
+            i = d.find(self.tt_vt) if d and self.tt_vt else -1
+            while i >= 0:
+                if i % 8 == 0:
+                    tt.append(base + i)
+                i = d.find(self.tt_vt, i + 1)
+        self.tt = tt
         return out
 
     def close(self):
@@ -385,42 +449,28 @@ def fix_offsets(samples):
     return True
 
 
-def my_slot(cand):
-    """유닛을 가진 사람 슬롯들 중 내 슬롯. 모르면 None (마지막으로 고른 슬롯이 그대로 남는다).
-    ponytail: 게임 안의 '내 번호' 칸을 못 찾아서 이름으로 가린다. 혼자 하는 판에서 내 이름을 배우고,
-    여럿이 하는 판에선 그 이름이 붙은 슬롯을 고른다. 닉네임을 바꾸면 혼자 한 판 뒤에 다시 맞는다."""
-    names = game['names']
-    multi, me = len({n for _, n in names}) > 1, cfg.get('my_name')
-    if multi:
-        mine = [o for o in cand if (o, me) in names]
-        return mine[0] if me and len(mine) == 1 else None
-    if len(cand) != 1:
-        return None
-    if names and names[0][1] != me and (cand[0], names[0][1]) in names:   # 사람이 나뿐인 판: 이 이름이 나다
-        cfg['my_name'] = names[0][1]; save_cfg()
-    return cand[0]
-
-
 def read_names(g):
-    for _ in range(6):   # 이름이 아직 안 채워졌으면 조금 뒤 다시
+    """슬롯 고르는 칸에 보여 줄 이름 + 화면 변환 행렬 위치. 6초쯤 걸려서 추적과 따로 돈다."""
+    for _ in range(6):   # 아직 안 채워졌으면 조금 뒤 다시
         try:
             names = g.find_names()
         except Exception:
             traceback.print_exc(); return
         if names or not g.alive():
-            game['names'] = names
             state['names'] = {o: n for o, n in names}
             return
         time.sleep(20)
 
 
-def publish(found):
+def publish(found, me=None):
+    """me: 게임이 알려 준 내 슬롯. 못 읽었으면(None) 예전처럼 사람 후보가 하나일 때만 그 슬롯."""
     counts, players = {}, {}
     for owner, sid in found:
         if sid >= 0:
             players[owner] = players.get(owner, 0) + 1
     # ponytail: slot 7 = this map's showcase computer (200+ units), 24+ = neutral.
-    pick = my_slot([o for o, n in humans(players).items() if n < 150])
+    cand = [o for o, n in humans(players).items() if n < 150]
+    pick = me if me is not None else cand[0] if len(cand) == 1 else None
     if state['auto'] and pick is not None and pick != state['owner']:
         state['owner'] = pick; save_cfg()
     for owner, sid in found:
@@ -470,9 +520,9 @@ def pieces_of(regions):
 def run_list_mode(g):
     """게임의 유닛 목록을 직접 읽는 방식. 목록이 없어지면(판 끝·프로세스 종료) 돌아간다."""
     state['status'] = '연결됨'
-    empty_since, bad = None, 0
-    game['names'] = []
-    threading.Thread(target=read_names, args=(g,), daemon=True).start()   # 6초쯤 걸려서 추적과 따로
+    empty_since, bad, me = None, 0, None
+    LIVE['g'] = g
+    threading.Thread(target=read_names, args=(g,), daemon=True).start()
     while g.alive():
         t0 = time.time()
         found = g.world_units()
@@ -484,7 +534,9 @@ def run_list_mode(g):
                 return
         else:
             bad = 0
-        publish(found)
+        if me is None:
+            me = g.local_slot()
+        publish(found, me)
         state.update(tick_ms=round((time.time() - t0) * 1000), hot_mb=0, mode='list')
         if not state['players']:
             empty_since = empty_since or time.time()
@@ -952,26 +1004,130 @@ def valid_cmd(text):
         text.lower() in (it.get('descr') or '').lower() for g in json.loads(SIONS).get('groups', []) for it in g['items'])
 
 
+def focus_game():
+    """게임 창을 앞으로 가져온다 -> 창 핸들, 안 되면 까닭(글)."""
+    pid = find_pid()
+    h = pid and game_window(pid)
+    if not h:
+        return '게임 창을 못 찾았어요'
+    if u32.GetForegroundWindow() == h:
+        return h
+    if u32.IsIconic(h):
+        u32.ShowWindow(h, 9)
+    u32.keybd_event(0x12, 0, 0, 0)   # Alt 를 눌렀다 떼야 윈도우가 다른 프로그램 창을 앞으로 보내 준다
+    u32.SetForegroundWindow(h)
+    u32.keybd_event(0x12, 0, 2, 0)
+    for _ in range(30):
+        if u32.GetForegroundWindow() == h:
+            time.sleep(0.25)
+            return h
+        time.sleep(0.05)
+    return '게임 창을 앞으로 못 가져왔어요. 게임 화면을 한 번 누른 뒤 다시 해 주세요'
+
+
+# 3.0.0.24268 기준 위치. 하나라도 어긋나면 확인 단계에서 걸려 아무것도 누르지 않는다.
+OFF_SLOT = 0x6a                             # CPlayerWar3: 슬롯 번호
+OFF_SEL, OFF_SEL_NOW, OFF_SEL_SYNC = 0x168, 0x3b0, 0x348   # 플레이어 -> 선택 물체 -> 방금 고른 유닛 / 게임이 확정한 유닛
+OFF_SPRITE, OFF_POS = 0x60, 0x170           # 유닛 -> 그리기 물체 -> 위치 (x, y, z)
+OFF_CAM, OFF_CAM_TARGET, OFF_CAM_DIST = 0x228, 0xc0, 0x108   # CWorldFrameWar3 -> CCamera -> 보는 점 / 거리
+OFF_VP = 0x58                               # CTextTagManager: 화면 변환 행렬
+u32.WindowFromPoint.argtypes, u32.WindowFromPoint.restype = [W.POINT], W.HWND
+u32.GetAncestor.argtypes, u32.GetAncestor.restype = [W.HWND, W.UINT], W.HWND
+u32.GetClientRect.argtypes = [W.HWND, ctypes.POINTER(W.RECT)]
+u32.ClientToScreen.argtypes = [W.HWND, ctypes.POINTER(W.POINT)]
+
+
+def game_combine(sid):
+    """버튼으로 조합: 재료 유닛을 화면에서 눌러 고른 뒤 단축키(Z/X/C)를 누른다.
+    고른 유닛이 그 재료가 맞는지 게임에서 읽어 확인한 다음에만 단축키를 누른다."""
+    with chat_lock:
+        g, opts = LIVE['g'], COMBOS.get(sid)
+        if not opts:
+            return '버튼으로 조합하는 유닛이 아니에요'
+        if not g or not g.world or not g.alive():
+            return '게임 중이 아니에요'
+        try:
+            return _combine(g, opts)
+        except Exception as e:
+            traceback.print_exc()
+            return f'조합하지 못했어요: {e}'
+
+
+def _combine(g, opts):
+    rq = lambda a: struct.unpack('<Q', g.read(a, 8) or bytes(8))[0]
+    pl = g.local_player()
+    sel = pl and rq(pl + OFF_SEL)
+    if not sel or not g.sel_vt or g.read(sel, 8) != g.sel_vt:
+        return '선택 정보를 못 찾았어요 (게임이 업데이트된 것 같아요)'
+    me = g.read(pl + OFF_SLOT, 1)[0]
+    if not g.view_matrix():
+        return '화면 정보를 아직 못 찾았어요. 몇 초 뒤 다시 눌러 주세요'
+    keys = {struct.pack('<I', int.from_bytes(c.encode(), 'big')): k for c, k in opts}
+
+    def material(p):   # 이 유닛이 내 재료 유닛이면 단축키, 아니면 None
+        o = g.read(p, SZ) if p else None
+        ok = o and len(o) == SZ and o[:8] == g.vt and struct.unpack_from('<I', o, OFF_OWNER)[0] == me and struct.unpack_from('<I', o, OFF_GONE)[0] == 0
+        return (keys.get(o[OFF_TYPE:OFF_TYPE + 4]), o) if ok else (None, None)
+
+    cands = [p for p in g.unit_ptrs() or () if material(p)[0]]
+    if not cands:
+        return '조합 버튼을 가진 재료 유닛이 없어요'
+    h = focus_game()
+    if isinstance(h, str):
+        return h
+    rc, old, tried = W.RECT(), W.POINT(), 0
+    u32.GetClientRect(h, ctypes.byref(rc))
+    u32.GetCursorPos(ctypes.byref(old))
+    try:
+        for p in cands:
+            key, o = material(p)
+            M = g.view_matrix()          # 카메라가 움직였을 수 있으니 매번 다시 읽는다
+            pos = key and g.read(struct.unpack_from('<Q', o, OFF_SPRITE)[0] + OFF_POS, 12)
+            if not M or not pos or len(pos) < 12:
+                continue
+            x, y, z = struct.unpack('<3f', pos)
+            z += 25                      # 발끝보다 조금 위
+            w = x * M[3] + y * M[7] + z * M[11] + M[15]
+            if w <= 1:
+                continue
+            sx = ((x * M[0] + y * M[4] + z * M[8] + M[12]) / w * 0.5 + 0.5) * rc.right
+            sy = (0.5 - (x * M[1] + y * M[5] + z * M[9] + M[13]) / w * 0.5) * rc.bottom
+            if not (rc.right * 0.02 < sx < rc.right * 0.98 and rc.bottom * 0.05 < sy < rc.bottom * 0.72):   # 화면 밖·아래쪽 조작판
+                continue
+            pt = W.POINT(int(sx), int(sy))
+            u32.ClientToScreen(h, ctypes.byref(pt))
+            if u32.GetAncestor(u32.WindowFromPoint(pt), 2) != h or u32.GetForegroundWindow() != h:   # 다른 창이 가리고 있다
+                continue
+            tried += 1
+            u32.SetCursorPos(pt.x, pt.y)
+            time.sleep(0.08)
+            u32.mouse_event(2, 0, 0, 0, 0)
+            time.sleep(0.03)
+            u32.mouse_event(4, 0, 0, 0, 0)
+            for _ in range(14):          # 게임이 선택을 확정할 때까지
+                time.sleep(0.05)
+                now = rq(sel + OFF_SEL_NOW)
+                if now and now == rq(sel + OFF_SEL_SYNC):
+                    break
+            key = material(now)[0] if now == rq(sel + OFF_SEL_SYNC) else None   # 겹쳐 있어 다른 유닛이 골라졌어도 같은 재료면 된다
+            if key and u32.GetForegroundWindow() == h:
+                time.sleep(0.05)
+                tap(ord(key), u32.MapVirtualKeyW(ord(key), 0))
+                return 'ok'
+            if tried >= 5:
+                break
+    finally:
+        u32.SetCursorPos(old.x, old.y)
+    return ('재료 유닛을 고르지 못했어요. 다른 유닛에 가려져 있으면 조금 떼어 놓고 다시 눌러 주세요' if tried
+            else '재료 유닛이 게임 화면에 안 보여요. 유닛이 보이게 화면을 옮긴 뒤 다시 눌러 주세요')
+
+
 def game_chat(text):
     """게임 창을 앞으로 가져와 Enter - 글자 - Enter. 게임 창이 앞에 있을 때만 친다 (다른 창에 치면 안 된다)."""
     with chat_lock:
-        pid = find_pid()
-        h = pid and game_window(pid)
-        if not h:
-            return '게임 창을 못 찾았어요'
-        if u32.IsIconic(h):
-            u32.ShowWindow(h, 9)
-        if u32.GetForegroundWindow() != h:
-            u32.keybd_event(0x12, 0, 0, 0)   # Alt 를 눌렀다 떼야 윈도우가 다른 프로그램 창을 앞으로 보내 준다
-            u32.SetForegroundWindow(h)
-            u32.keybd_event(0x12, 0, 2, 0)
-        for _ in range(30):
-            if u32.GetForegroundWindow() == h:
-                break
-            time.sleep(0.05)
-        else:
-            return '게임 창을 앞으로 못 가져왔어요. 게임 화면을 한 번 누른 뒤 다시 해 주세요'
-        time.sleep(0.25)
+        h = focus_game()
+        if isinstance(h, str):
+            return h
         tap(0x0D, 0x1C)                      # Enter: 채팅 열기
         time.sleep(0.15)
         for ch in text:
@@ -1014,9 +1170,6 @@ class Handler(BaseHTTPRequestHandler):
                 state['auto'] = True
             else:
                 state['owner'], state['auto'] = int(q[2:]), False
-                nm = [x for o, x in game['names'] if o == state['owner']]
-                if len(nm) == 1 and not cfg.get('my_name'):   # 여럿이 하는 판에서 처음 손으로 고름 = 내 이름을 배운다
-                    cfg['my_name'] = nm[0]
             save_cfg()
             self._send(200, b'ok', 'text/plain')
         elif path == '/data':
@@ -1061,6 +1214,11 @@ class Handler(BaseHTTPRequestHandler):
             text = body.decode('utf-8', 'replace').strip()
             mine = self.client_address[0] == '127.0.0.1' and self.headers.get('Origin') in (f'http://127.0.0.1:{PORT}', f'http://localhost:{PORT}')
             msg = '이 컴퓨터에서 연 페이지에서만 돼요' if not mine else game_chat(text) if valid_cmd(text) else '조합 명령어가 아니에요'
+            self._send(200, msg.encode(), 'text/plain; charset=utf-8')
+        elif self.path == '/combine':   # 몸통 = 만들 유닛의 sions id
+            text = body.decode('utf-8', 'replace').strip()
+            mine = self.client_address[0] == '127.0.0.1' and self.headers.get('Origin') in (f'http://127.0.0.1:{PORT}', f'http://localhost:{PORT}')
+            msg = '이 컴퓨터에서 연 페이지에서만 돼요' if not mine else game_combine(int(text)) if text.isdigit() else '잘못된 요청이에요'
             self._send(200, msg.encode(), 'text/plain; charset=utf-8')
         elif self.path == '/overlay':
             spawn_overlay()
