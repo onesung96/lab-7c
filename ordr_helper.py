@@ -11,7 +11,7 @@
 import ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.6.0'
+VERSION = '1.6.1'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -769,17 +769,53 @@ def set_startup(on):
     state['startup'] = os.path.exists(STARTUP)
 
 
+def newer_release():
+    """깃허브 최신 릴리스가 지금 버전보다 높으면 (버전, 페이지 주소), 아니면 None"""
+    req = urllib.request.Request(f'https://api.github.com/repos/{REPO}/releases/latest', headers={'User-Agent': 'ordr-helper'})
+    rel = json.loads(urllib.request.urlopen(req, timeout=10).read())
+    tag = rel.get('tag_name', '').lstrip('v')
+    if tag and tuple(map(int, tag.split('.'))) > tuple(map(int, VERSION.split('.'))):
+        return tag, rel.get('html_url')
+    return None
+
+
 def check_update():
+    """켤 때 한 번 + 30분마다 확인. 켤 때 새 버전이 있으면 묻지 않고 바로 설치한다(exe 만).
+    게임 중에 프로그램이 저절로 재시작되면 안 되니, 30분 확인에서는 버튼만 띄운다."""
+    first = True
     while True:
         try:
-            req = urllib.request.Request(f'https://api.github.com/repos/{REPO}/releases/latest', headers={'User-Agent': 'ordr-helper'})
-            rel = json.loads(urllib.request.urlopen(req, timeout=10).read())
-            tag = rel.get('tag_name', '').lstrip('v')
-            if tag and tuple(map(int, tag.split('.'))) > tuple(map(int, VERSION.split('.'))):
-                state['update'] = {'ver': tag, 'url': rel.get('html_url')}
-        except Exception:
-            pass
-        time.sleep(6 * 3600)
+            new = newer_release()
+            if new:
+                state['update'] = {'ver': new[0], 'url': new[1]}
+                # 같은 버전 설치는 한 번만 시도: 받은 파일이 잘못돼 버전이 안 오르면 재시작이 끝없이 반복된다
+                if first and FROZEN and cfg.get('update_tried') != new[0] and '--no-auto-update' not in sys.argv:
+                    cfg['update_tried'] = new[0]; save_cfg()
+                    state['notice'] = f'새 버전 {new[0]} 설치 중… 곧 다시 켜져요'
+                    if TRAY: TRAY.balloon('원랜디 도우미 업데이트', f'새 버전 {new[0]} 을 설치하고 다시 켜요')
+                    self_update()
+        except Exception as e:
+            print('업데이트 확인 실패:', e)
+        first = False
+        time.sleep(30 * 60)
+
+
+def tray_update():
+    """트레이 메뉴 '업데이트 확인': 새 버전이 있으면 바로 설치, 없으면 알려 준다."""
+    try:
+        new = newer_release()
+        if not new:
+            if TRAY: TRAY.balloon('원랜디 도우미', f'이미 최신 버전이에요 ({VERSION})')
+            return
+        state['update'] = {'ver': new[0], 'url': new[1]}
+        if FROZEN:
+            if TRAY: TRAY.balloon('원랜디 도우미 업데이트', f'새 버전 {new[0]} 을 설치하고 다시 켜요')
+            cfg['update_tried'] = new[0]; save_cfg()
+            self_update()
+        else:
+            import webbrowser; webbrowser.open(new[1])
+    except Exception as e:
+        if TRAY: TRAY.balloon('원랜디 도우미', f'업데이트 확인 실패: {e}')
 
 
 def self_update():
@@ -930,6 +966,7 @@ if __name__ == '__main__':
                          lambda: f"원랜디 도우미 {VERSION} · {state['status']}" + (f" · 내 유닛 {units()}" if state['players'] else ''),
                          [('도우미 페이지 열기', open_page),
                           ('게임 위에 띄우기', spawn_overlay),
+                          ('업데이트 확인', tray_update),
                           ('-', None),
                           (lambda: f"{state['status']}" + (f" · {state['owner'] + 1}번 슬롯 · 유닛 {units()}" if state['players'] else ''), None),
                           ('-', None),
