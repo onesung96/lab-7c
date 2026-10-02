@@ -11,7 +11,7 @@
 import ctypes, ctypes.wintypes as W, json, math, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.6.8'
+VERSION = '1.6.9'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -69,7 +69,7 @@ def apply_mapping(mp):
 
 state = {'status': '워크3 기다리는 중', 'counts': {}, 'players': {}, 'ts': 0, 'scan': 0,
          'owner': cfg['owner'], 'auto': cfg['auto'], 'managed': [], 'notice': '', 'data_ver': 1,
-         'map_version': cfg['map_version'], 'version': VERSION, 'frozen': FROZEN, 'update': None, 'startup': False}
+         'map_version': cfg['map_version'], 'big_key': cfg.get('big_key', '`'), 'version': VERSION, 'frozen': FROZEN, 'update': None, 'startup': False}
 apply_mapping(json.load(open(res_or_local('mapping.json'), encoding='utf-8')))
 COMBOS = {}   # 버튼으로 조합하는 유닛: {결과 sions id: [[버튼을 가진 유닛 코드, 단축키], ...]}
 
@@ -1059,9 +1059,9 @@ def game_steps(steps):
             return '게임 중이 아니에요'
         prev, old, ui, cam0 = u32.GetForegroundWindow(), W.POINT(), None, None
         big = big_window()
-        big = big if big and u32.IsWindowVisible(big) else None   # 큰 창이 게임 화면을 가리니 조합하는 동안 숨긴다
+        big = big if big_shown(big) else None   # 큰 창이 게임 화면을 가리니 조합하는 동안 감춘다
         if big:
-            u32.ShowWindow(big, 0)
+            big_show(big, False)
         u32.GetCursorPos(ctypes.byref(old))
         try:
             me = g.local_slot()
@@ -1093,8 +1093,7 @@ def game_steps(steps):
             if cam0 and ui and not ui.err:
                 ui.back(cam0)
             if big:
-                u32.ShowWindow(big, 4)
-                u32.SetWindowPos(big, W.HWND(-1), 0, 0, 0, 0, 0x13)
+                big_show(big, True)
             gh, r = game_window(g.pid), W.RECT()
             if prev and prev != gh and prev != u32.GetForegroundWindow():
                 front(prev)
@@ -1393,14 +1392,33 @@ def big_window():
     return found[0] if found else None
 
 
+u32.GetWindowLongW.argtypes = [W.HWND, ctypes.c_int]
+u32.SetWindowLongW.argtypes = [W.HWND, ctypes.c_int, ctypes.c_long]
+u32.SetLayeredWindowAttributes.argtypes = [W.HWND, W.DWORD, W.BYTE, W.DWORD]
+u32.FindWindowW.restype = W.HWND
+
+
+def big_shown(h):
+    return bool(h and u32.IsWindowVisible(h) and not u32.GetWindowLongW(h, -20) & 0x20)
+
+
+def big_show(h, on):
+    """큰 창을 보이거나 감춘다. 창을 진짜로 숨기면 브라우저가 화면 그리기를 멈춰서 다시 띄울 때 오래 걸리고 버벅인다
+    -> 창은 그대로 두고 투명하게(+마우스가 통과하게)만 바꾼다. 바로 켜지고 바로 꺼진다."""
+    ex = u32.GetWindowLongW(h, -20) | 0x80000                    # WS_EX_LAYERED
+    u32.SetWindowLongW(h, -20, (ex & ~0x20) if on else (ex | 0x20))   # WS_EX_TRANSPARENT: 감췄을 땐 클릭이 게임으로 간다
+    u32.SetLayeredWindowAttributes(h, 0, 255 if on else 0, 2)
+    if on:
+        u32.SetWindowPos(h, W.HWND(-1), 0, 0, 0, 0, 0x13)        # 항상 위, 초점은 게임에 둔다
+
+
 def toggle_big():
-    """큰 창을 열거나(처음) 숨기거나 다시 보인다. 숨길 때는 게임 창으로 돌아간다."""
+    """큰 창을 열거나(처음) 감추거나 다시 보인다. 감출 때 초점이 큰 창에 있었으면 게임 창으로 돌려준다."""
     h = big_window()
-    if h and u32.IsWindowVisible(h):
-        u32.ShowWindow(h, 0)
-        pid = find_pid()
-        gh = pid and game_window(pid)
-        if gh:
+    if big_shown(h):
+        big_show(h, False)
+        gh = u32.FindWindowW(None, 'Warcraft III')
+        if gh and u32.GetForegroundWindow() == h:
             front(gh)
         return
     if not h:
@@ -1415,15 +1433,19 @@ def toggle_big():
             if h:
                 break
     if h:
-        u32.ShowWindow(h, 4)                              # 보이되 게임에서 초점을 뺏지 않는다
-        u32.SetWindowPos(h, W.HWND(-1), 0, 0, 0, 0, 0x13)   # 항상 위
+        if not u32.IsWindowVisible(h):
+            u32.ShowWindow(h, 4)
+        big_show(h, True)
+
+
+BIG_KEYS = {'`': 0xC0, 'F1': 0x70, 'F4': 0x73, 'F5': 0x74, 'F7': 0x76, 'Insert': 0x2D, '마우스 옆버튼': 0x05}
 
 
 def hotkey_loop():
-    """F1: 게임이나 큰 창이 앞에 있을 때만 큰 창을 여닫는다 (키 상태만 본다, 키보드 후킹 아님)."""
+    """큰 창 여닫기 키(기본 ` : 숫자 1 왼쪽). 게임이나 큰 창이 앞에 있을 때만 (키 상태만 본다, 키보드 후킹 아님)."""
     was = False
     while True:
-        down = bool(u32.GetAsyncKeyState(0x70) & 0x8000)
+        down = bool(u32.GetAsyncKeyState(BIG_KEYS.get(cfg.get('big_key'), 0xC0)) & 0x8000)
         if down and not was:
             buf = ctypes.create_unicode_buffer(64)
             u32.GetWindowTextW(u32.GetForegroundWindow(), buf, 64)
@@ -1433,7 +1455,7 @@ def hotkey_loop():
                 except Exception:
                     traceback.print_exc()
         was = down
-        time.sleep(0.03)
+        time.sleep(0.02)
 
 
 def spawn_overlay():
@@ -1468,6 +1490,13 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 state['owner'], state['auto'] = int(q[2:]), False
             save_cfg()
+            self._send(200, b'ok', 'text/plain')
+        elif path == '/bigkey' and q.startswith('k='):   # 큰 창 여닫는 키 바꾸기
+            from urllib.parse import unquote
+            k = unquote(q[2:])
+            if k in BIG_KEYS:
+                cfg['big_key'] = state['big_key'] = k
+                save_cfg()
             self._send(200, b'ok', 'text/plain')
         elif path == '/data':
             self._send(200, SIONS, 'application/json; charset=utf-8')
@@ -1562,7 +1591,7 @@ if __name__ == '__main__':
                          lambda: f"원랜디 도우미 {VERSION} · {state['status']}" + (f" · 내 유닛 {units()}" if state['players'] else ''),
                          [('도우미 페이지 열기', open_page),
                           ('게임 위에 띄우기', spawn_overlay),
-                          ('게임 위 큰 창 (F1)', toggle_big),
+                          ('게임 위 큰 창 (` 키)', toggle_big),
                           ('업데이트 확인', tray_update),
                           ('-', None),
                           (lambda: f"{state['status']}" + (f" · {state['owner'] + 1}번 슬롯 · 유닛 {units()}" if state['players'] else ''), None),

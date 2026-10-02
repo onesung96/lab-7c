@@ -155,7 +155,7 @@ const THUMB = 'https://sions.kr/data/file/mk_helper_thumb/';
 const MINI = new URLSearchParams(location.search).has('mini');
 const OV = new URLSearchParams(location.search).has('ov');   // 게임 위 큰 창(F1)으로 열린 페이지
 if (OV) document.title = '원랜디 도우미 · 게임 위';            // 프로그램이 이 제목으로 창을 찾는다
-addEventListener('keydown', e => { if (e.key === 'F1') e.preventDefault(); });   // F1 은 큰 창 여닫기: 브라우저 도움말이 뜨지 않게
+addEventListener('keydown', e => { if (e.key === 'F1' || (OV && /^F\d+$/.test(e.key))) e.preventDefault(); });   // 큰 창 여닫는 키가 브라우저 기능(도움말·새로고침)을 부르지 않게
 const REC_FROM = RANK.indexOf('전설'), REC_TO = RANK.indexOf('랜덤유닛');   // 추천은 전설·히든 ~ 세라핌만
 
 const $ = id => document.getElementById(id);
@@ -810,7 +810,9 @@ function openSettings() {
     `<label><input type="checkbox" id="setAura" ${auraOnce ? 'checked' : ''}> ● 붙은 수치는 여러 마리여도 한 번만 계산 (끄면 마리 수만큼 더함)</label><br>` +
     `<label><input type="checkbox" id="setWisp" ${selWisp ? 'checked' : ''}> 흔함선택위습을 흔함 대신 쓰는 걸로 진행률 계산</label></div>` +
     `<div class="sec"><label><input type="checkbox" id="setStartup" ${srv.startup ? 'checked' : ''}> 윈도우 켤 때 자동 실행 (창 없이 뒤에서)</label>` +
-    ` <button class="ibtn" data-act="quit" style="float:right">프로그램 끄기</button><div class="dim" style="margin-top:4px">버전 ${esc(srv.version || '')}${srv.update ? ` · <a href="${esc(srv.update.url)}" target="_blank" style="color:var(--gold)">새 버전 ${esc(srv.update.ver)} 받기</a>` : ''} · 맵 ${esc(srv.map_version || '')}</div></div>` +
+    ` <button class="ibtn" data-act="quit" style="float:right">프로그램 끄기</button>` +
+    `<div style="margin-top:6px">게임 위 큰 창 여닫는 키 <select id="setBigKey">${['`', 'F1', 'F4', 'F5', 'F7', 'Insert', '마우스 옆버튼'].map(k => `<option${k === (srv.big_key || '`') ? ' selected' : ''}>${k}</option>`).join('')}</select> <span class="dim">(\` 는 숫자 1 왼쪽 키)</span></div>` +
+    `<div class="dim" style="margin-top:4px">버전 ${esc(srv.version || '')}${srv.update ? ` · <a href="${esc(srv.update.url)}" target="_blank" style="color:var(--gold)">새 버전 ${esc(srv.update.ver)} 받기</a>` : ''} · 맵 ${esc(srv.map_version || '')}</div></div>` +
     (excluded.size ? `<div class="sec"><h4>추천에서 뺀 유닛 (누르면 되돌림)</h4>${[...excluded].filter(id => items[id]).map(id => `<button class="ibtn" data-ex="${id}" style="margin:2px">${esc(nm(id))} <span class="dim">${esc(items[id].grade.split(' ')[0])}</span> ↩</button>`).join('')}</div>` : '') +
     `<div class="sec"><h4>지난 판 기록 <button class="ibtn" data-act="csv" style="float:right">엑셀(CSV)로 저장</button></h4><div id="hstat"></div><div id="hist" class="dim">불러오는 중…</div></div>` +
     `<div class="sec">글자 크기 <select id="setZoom">${[85, 100, 115, 130].map(z => `<option value="${z}"${z === zoom ? ' selected' : ''}>${z}%</option>`).join('')}</select>` +
@@ -877,6 +879,7 @@ document.addEventListener('change', e => {
   if (e.target.id === 'setTone') { tone = e.target.value; store.set('tone', tone); ding(880, true); }
   if (e.target.id === 'setVol') { vol = +e.target.value; store.set('vol', vol); ding(880, true); }
   if (e.target.id === 'setOs') { osNotify = e.target.checked; store.set('osNotify', osNotify); if (osNotify && 'Notification' in window) Notification.requestPermission(); }
+  if (e.target.id === 'setBigKey') fetch('/bigkey?k=' + encodeURIComponent(e.target.value)).then(() => { srv.big_key = e.target.value; toast('큰 창 여닫는 키: ' + e.target.value); });
   if (e.target.id === 'setStartup') fetch('/startup?on=' + (e.target.checked ? 1 : 0)).then(r => r.json()).then(j => { srv.startup = j.startup; toast(j.startup ? '윈도우 켤 때 자동으로 실행돼요' : '자동 실행을 껐어요'); });
   if (e.target.id === 'setAura') { auraOnce = e.target.checked; store.set('auraOnce', auraOnce); render(); }
   if (e.target.id === 'setWisp') { selWisp = e.target.checked; store.set('selWisp', selWisp); render(); }
