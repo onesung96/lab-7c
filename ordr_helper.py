@@ -11,7 +11,7 @@
 import ctypes, ctypes.wintypes as W, json, math, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.6.6'
+VERSION = '1.6.7'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -1044,6 +1044,7 @@ OFF_VP = 0x58                               # CTextTagManager: 화면 변환 행
 u32.WindowFromPoint.argtypes, u32.WindowFromPoint.restype = [W.POINT], W.HWND
 u32.GetAncestor.argtypes, u32.GetAncestor.restype = [W.HWND, W.UINT], W.HWND
 u32.GetClientRect.argtypes = [W.HWND, ctypes.POINTER(W.RECT)]
+u32.GetWindowRect.argtypes = [W.HWND, ctypes.POINTER(W.RECT)]
 u32.keybd_event.argtypes = [W.BYTE, W.BYTE, W.DWORD, ctypes.c_void_p]
 u32.ClientToScreen.argtypes = [W.HWND, ctypes.POINTER(W.POINT)]
 
@@ -1088,10 +1089,19 @@ def game_steps(steps):
         finally:   # 화면을 처음 보던 곳으로 -> 원래 창(페이지)으로 -> 마우스 제자리. 창보다 마우스를 먼저 돌리면 게임이 화면을 밀어 버린다
             if cam0 and ui and not ui.err:
                 ui.back(cam0)
-            if prev and prev != u32.GetForegroundWindow():
+            gh, r = game_window(g.pid), W.RECT()
+            if prev and prev != gh and prev != u32.GetForegroundWindow():
                 front(prev)
-                time.sleep(0.1)
-            u32.SetCursorPos(old.x, old.y)
+                for _ in range(10):
+                    if u32.GetForegroundWindow() != gh:
+                        break
+                    time.sleep(0.05)
+            u32.GetWindowRect(gh, ctypes.byref(r))
+            inside = r.left <= old.x < r.right and r.top <= old.y < r.bottom
+            stuck = u32.GetForegroundWindow() == gh and not inside
+            print(f'끝: 게임이 앞={u32.GetForegroundWindow() == gh} 마우스 원래 자리가 게임 안={inside}')
+            if not stuck:   # 게임이 앞에 남았는데 마우스만 다른 모니터로 보내면 게임이 화면을 그쪽으로 계속 민다
+                u32.SetCursorPos(old.x, old.y)
 
 
 def mine_of(g, me, sid):
@@ -1157,7 +1167,9 @@ class Clicker:
         return xyz and self.screen((xyz[0], xyz[1], xyz[2] + 25))   # 발끝보다 조금 위
 
     def safe(self, s):
-        return s and self.rc.right * 0.03 < s[0] < self.rc.right * 0.97 and self.rc.bottom * 0.06 < s[1] < self.rc.bottom * 0.72
+        # 화면 가운데-왼쪽 상자만 누른다. 오른쪽 위엔 점수판, 아래엔 조작판·미니맵, 맨 위엔 자원 줄이 있어서
+        # 거기 선 유닛은 좌표가 맞아도 눌리지 않는다. 밖에 있으면 aim() 이 화면을 옮겨 상자 안으로 데려온다.
+        return s and self.rc.right * 0.10 < s[0] < self.rc.right * 0.64 and self.rc.bottom * 0.18 < s[1] < self.rc.bottom * 0.68
 
     def cam(self):
         """카메라가 보는 점 (x, y)."""
@@ -1191,8 +1203,8 @@ class Clicker:
         def want():
             s = self.body(p)
             if s:
-                return (0x28 if s[1] > rc.bottom * 0.66 else 0x26 if s[1] < rc.bottom * 0.10 else
-                        0x27 if s[0] > rc.right * 0.93 else 0x25 if s[0] < rc.right * 0.07 else None)
+                return (0x28 if s[1] > rc.bottom * 0.58 else 0x26 if s[1] < rc.bottom * 0.28 else
+                        0x27 if s[0] > rc.right * 0.58 else 0x25 if s[0] < rc.right * 0.16 else None)
             xyz, c = self.where(p), self.cam()       # 카메라 뒤쪽이라 화면 좌표가 없다: 보는 점보다 남쪽이면 아래로
             return (0x28 if xyz[1] < c[1] else 0x26) if xyz and c else 0x28
         return self.steer(want, 4) and bool(self.safe(self.body(p)))
@@ -1216,6 +1228,9 @@ class Clicker:
         if u32.GetAncestor(u32.WindowFromPoint(pt), 2) != self.h or u32.GetForegroundWindow() != self.h:
             return False
         u32.SetCursorPos(pt.x, pt.y)
+        time.sleep(0.05)
+        u32.mouse_event(1, 1, 0, 0, 0)    # 1픽셀 흔들기: 게임이 '마우스가 움직였다'는 신호를 받아야 커서 위치를 새로 잡는다
+        u32.mouse_event(1, -1, 0, 0, 0)
         time.sleep(0.12)
         u32.mouse_event(8 if right else 2, 0, 0, 0, 0)
         time.sleep(0.04)
