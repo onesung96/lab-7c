@@ -11,7 +11,7 @@
 import ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.7.6'
+VERSION = '1.7.7'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -389,8 +389,9 @@ class Game:
                     res.append(base + i)
                 i = d.find(RES_SIG[0], i + 1)
         self.tt = tt
-        # ponytail: 혼자 하는 판에선 이런 줄이 하나뿐이었다. 여럿이면 누구 것인지 몰라서 안 쓴다 (그때 내 것 가리는 법을 찾을 것)
-        self.res = res[0] if len(res) == 1 else None
+        # ponytail: 이 기록은 혼자 하는 판에서만 내 것으로 확인됐다. 여럿이 하는 판에서도 하나만 나오는데 남의 값이었다
+        # (목재 5개가 있는데 1개로 읽어 조합을 막음) -> 사람이 나 혼자일 때만 쓴다. 여럿일 때 내 자원이 어디 있는지는 아직 못 찾았다.
+        self.res = res[0] if len(res) == 1 and len({n for _, n in out}) == 1 else None
         return out
 
     def resources(self):
@@ -1566,13 +1567,15 @@ u32.FindWindowW.restype = W.HWND
 
 
 def big_shown(h):
-    return bool(h and u32.IsWindowVisible(h) and not u32.GetWindowLongW(h, -20) & 0x20)
+    return bool(h and u32.IsWindowVisible(h) and not u32.IsIconic(h) and not u32.GetWindowLongW(h, -20) & 0x20)
 
 
 def big_show(h, on):
     """큰 창을 보이거나 감춘다. 창을 진짜로 숨기면 브라우저가 화면 그리기를 멈춰서 다시 띄울 때 오래 걸리고 버벅인다
     -> 창은 그대로 두고 투명하게(+마우스가 통과하게)만 바꾼다. 바로 켜지고 바로 꺼진다."""
     ex = u32.GetWindowLongW(h, -20) | 0x80000                    # WS_EX_LAYERED
+    if on and u32.IsIconic(h):
+        u32.ShowWindow(h, 4)                                     # 최소화돼 있었다: 초점은 뺏지 않고 편다
     u32.SetWindowLongW(h, -20, (ex & ~0x20) if on else (ex | 0x20))   # WS_EX_TRANSPARENT: 감췄을 땐 클릭이 게임으로 간다
     u32.SetLayeredWindowAttributes(h, 0, max(60, min(255, int(cfg.get('big_alpha', 100)) * 255 // 100)) if on else 0, 2)
     if on:
