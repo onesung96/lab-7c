@@ -146,7 +146,7 @@ body.mini #pins { display:block } body.mini #pins .it { display:block; padding:3
 // 목표치 기본값: sions 도우미 메모(풀이감 107%, 신풀깍 201) + 커뮤니티 공략(물딜 스턴 1~1.5, 마딜 1.5~2 / 이감 70~90)
 const DEFAULTS = { 물딜: { 이감: 107, 방깍: 201, 스턴: 1.5, 보잡: 1 }, 마딜: { 이감: 90, 방깍: 0, 스턴: 2, 보잡: 1 } };
 const CHECK = ['이감', '방깍', '스턴', '보잡'];
-const STATS = ['이감', '방깍', '스턴', '보잡', '마방깍', '공증', '공속', '마젠', '마증', '추가방깍'];
+const STATS = ['이감', '방깍', '스턴', '보잡', '마방깍', '공증', '공속', '마젠', '마증', '추가방깍', '단일스턴', '단일깍', '보스깍'];
 const RANK = ['흔함', '안흔함', '특별함', '희귀함', '전설', '히든', '초월함', '제한됨', '불멸의', '영원함', '신비함', '왜곡', '변화', '세라핌', '랜덤유닛', '조합 아이템', '기타'];
 // 게임 속 등급 색 (맵 파일의 |cff 색 코드)
 const GCOLOR = { 흔함: '#4fd65a', 안흔함: '#a47ef2', 특별함: '#3f94ff', 희귀함: '#f062f0', 전설: '#ff5555', 히든: '#7d86ff', 초월함: '#00fa9a',
@@ -178,12 +178,23 @@ const WISPS = { '-1': '흔함선택위습', '-2': '안흔함위습', '-3': '특�
 function parse(name) {
   const once = {}, each = {};
   const add = (o, k, v) => { o[k] = (o[k] || 0) + v };
-  for (const m of name.matchAll(/(●?)(?:발동|발)?(?<!맵|적)이감\s*(\d+)/g)) add(m[1] ? once : each, '이감', +m[2]);
-  for (const m of name.matchAll(/(마방|맵|보스)?(?:방)?(?:깍|깎)\s*\(?(\d+)/g)) {
-    if (m[1] === '마방') add(each, '마방깍', +m[2]); else if (!m[1]) add(each, '방깍', +m[2]);
+  // 이감: ●이감(오라), 발동이감, 맵이감(맵 전체)
+  for (const m of name.matchAll(/(●?)(?:발동|발|맵)?이감\s*(\d+)/g)) add(m[1] ? once : each, '이감', +m[2]);
+  // 방깍: 깍/깎/방깍/발동깍/맵깎. 단일깍(한 마리에게만)·보스깍(보스에게만)·마방깍은 따로 센다.
+  //       "오버깎(250) 짜야 최대 딜" 같은 설명은 수치가 아니다.
+  for (const m of name.matchAll(/(마방|보스|단일|오버)?(?:맵|발동|방)?(?:깍|깎)\s*\(?(\d+)/g)) {
+    if (m[1] === '마방') add(each, '마방깍', +m[2]);
+    else if (m[1] === '단일') add(each, '단일깍', +m[2]);
+    else if (m[1] === '보스') add(each, '보스깍', +m[2]);
+    else if (!m[1]) add(each, '방깍', +m[2]);
   }
-  const st = name.match(/(\d+(?:\.\d+)?)\s*(?:단일)?스턴/) || name.match(/스턴\s*(\d+\.\d+)/);
+  // 스턴: 숫자가 '스턴' 바로 앞에 붙은 광역 스턴만 (0.9스턴, 0.8(특강시 1.1)스턴, 0.18 범위스턴, 범위스턴0.7).
+  //       단일스턴(0.5단일, 단일스턴0.7)은 한 마리만 멈추니 스턴 합계에 넣지 않고 마리 수만 따로 센다.
+  //       예전엔 "…깍20  단일스턴" 의 20 을 스턴 20 으로 읽었다.
+  const st = [...name.matchAll(/(\d+(?:\.\d+)?)(?:\([^)]*\))?스턴/g)].find(m => !/단일$/.test(name.slice(0, m.index)))
+    || name.match(/(\d+(?:\.\d+)?)\s*범위스턴/) || name.match(/범위스턴\s*(\d+(?:\.\d+)?)/);
   if (st) add(each, '스턴', +st[1]);
+  if (/단일\s*[\d.]*\s*스턴|\d단일/.test(name)) add(each, '단일스턴', 1);
   if (/보잡|보스/.test(name)) add(each, '보잡', 1);   // 보스잡기: 광보잡, 보스현퍼, 보스깍, 보스&광폭 …
   for (const [k, re] of [['공증', /공증\s*(\d+)/], ['공속', /공속\s*(\d+)/], ['마젠', /마젠\s*(\d+(?:\.\d+)?)/], ['마증', /마(?:뎀)?증\s*(\d+)/]]) {
     const m = name.match(re); if (m) add(each, k, +m[1]);
@@ -450,7 +461,8 @@ function render() {
   if ((counts[0] || 0) >= 3) warns.push(`<span class="chip w">위습 ${counts[0]}개</span>`);
   for (const [w, label] of Object.entries(WISPS)) if (counts[w]) warns.push(`<span class="chip w" title="${w === '-1' ? (selWisp ? '흔함 대신 쓰는 걸로 계산 중' : '⚙ 설정에서 흔함 대신 쓰기를 켤 수 있어요') : ''}">${label} ${counts[w]}${w === '-1' && selWisp ? ' (계산 포함)' : ''}</span>`);
   if (!warns.length && Object.keys(counts).length) warns.push('<span class="chip g">목표치 다 채움</span>');
-  const extra = ['마방깍', '공증', '공속', '마젠', '마증', '추가방깍'].filter(k => cur[k]).map(k => `${k === '추가방깍' ? '보스·스토리 추가 방깍' : k} ${+cur[k].toFixed(2)}`).join(' · ');
+  const extra = ['단일스턴', '단일깍', '보스깍', '마방깍', '공증', '공속', '마젠', '마증', '추가방깍'].filter(k => cur[k])
+    .map(k => k === '단일스턴' ? `단일스턴 ${cur[k]}마리` : `${k === '추가방깍' ? '보스·스토리 추가 방깍' : k} ${+cur[k].toFixed(2)}`).join(' · ');
   $('summary').innerHTML = sum + `<div>${warns.join(' ')}</div>` + (extra ? `<div class="extra">${extra}</div>` : '');
 
   // 추천: 진행률 60% 이상(하위 조합 포함) 중 부족한 스탯을 실제로 올려 주는 것, 채우는 양 × 진행률 순
