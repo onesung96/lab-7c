@@ -11,7 +11,7 @@
 import ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.7.0'
+VERSION = '1.7.1'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -78,6 +78,7 @@ def apply_combos(c):
     global COMBOS
     COMBOS = {int(k): v for k, v in c.items()}
     state['combos'] = sorted(COMBOS)
+    state['costs'] = {k: v[0][2:4] for k, v in COMBOS.items() if v and len(v[0]) >= 4 and any(v[0][2:4])}   # {id: [목재, 골드]}
 
 
 try:
@@ -226,6 +227,7 @@ class Game:
         tt, sel = self.vtable_of(img, base, b'CTextTagManager'), self.vtable_of(img, base, b'CSelectionWar3')
         self.tt_vt, self.sel_vt = tt and struct.pack('<Q', tt), sel and struct.pack('<Q', sel)
         self.pl_off, self.tt = None, []   # 내 플레이어를 가리키는 칸의 위치, CTextTagManager 주소들
+        self.res = None                    # 내 자원 기록(골드·목재)이 줄지어 있는 곳
         self.world = None        # (CWorldFrameWar3 주소, 유닛 목록 {개수, 주소, 용량} 의 위치)
 
     @staticmethod
@@ -357,7 +359,7 @@ class Game:
         """플레이어 이름 [(슬롯, 이름)]. CPlayerWar3: 슬롯 번호 +0x6a, 이름 주소 +0xa0, 길이 +0xa8 (3.0.0.24268).
         사람 플레이어만 이름이 있다. 1MB 이하 구역만 훑어서 6초쯤 걸린다 -> 판마다 한 번만.
         같은 길에 CTextTagManager(화면 변환 행렬을 가진 물체)도 찾아 둔다."""
-        out, naps, tt = [], 0, []
+        out, naps, tt, res = [], 0, [], []
         for base, size in sorted(self.regions()):
             if size > 1 << 20 or not self.pl_vt:
                 continue
@@ -378,8 +380,22 @@ class Game:
                 if i % 8 == 0:
                     tt.append(base + i)
                 i = d.find(self.tt_vt, i + 1)
+            i = d.find(RES_SIG[0]) if d else -1   # 자원 기록: 번호 (1,1) (2,2) (3,3) (4,4) 가 0xe0 간격으로 줄지어 있다
+            while i >= 0:
+                if i % 8 == 0 and all(d[i + k * RES_STEP:i + k * RES_STEP + 16] == RES_SIG[k] for k in range(1, 8)):
+                    res.append(base + i)
+                i = d.find(RES_SIG[0], i + 1)
         self.tt = tt
+        # ponytail: 혼자 하는 판에선 이런 줄이 하나뿐이었다. 여럿이면 누구 것인지 몰라서 안 쓴다 (그때 내 것 가리는 법을 찾을 것)
+        self.res = res[0] if len(res) == 1 else None
         return out
+
+    def resources(self):
+        """(골드, 목재). 게임은 10배 한 값으로 들고 있다. 못 읽으면 None."""
+        d = self.res and self.read(self.res + RES_STEP, RES_STEP * 2)
+        if not d or len(d) < RES_STEP * 2 or d[:16] != RES_SIG[1] or d[RES_STEP:RES_STEP + 16] != RES_SIG[2]:
+            return None
+        return struct.unpack_from('<i', d, 0xb0)[0] // 10, struct.unpack_from('<i', d, RES_STEP + 0xb0)[0] // 10
 
     def close(self):
         k32.CloseHandle(self.h)
@@ -537,6 +553,8 @@ def run_list_mode(g):
         if me is None:
             me = g.local_slot()
         publish(found, me)
+        r = g.resources()
+        state.update(gold=r and r[0], wood=r and r[1])
         state.update(tick_ms=round((time.time() - t0) * 1000), hot_mb=0, mode='list')
         if not state['players']:
             empty_since = empty_since or time.time()
@@ -1037,11 +1055,15 @@ def focus_game():
 
 # 3.0.0.24268 기준 위치. 하나라도 어긋나면 확인 단계에서 걸려 아무것도 누르지 않는다.
 OFF_SLOT = 0x6a                             # CPlayerWar3: 슬롯 번호
+RES_STEP = 0xe0                             # 자원 기록 한 칸의 크기. 값(10배)은 칸 +0xb0. 2번 칸 = 골드, 3번 칸 = 목재
+RES_SIG = [struct.pack('<IIQ', k, k, 0) for k in range(1, 9)]   # 칸 머리: 번호 두 번 + 0. 1~8번이 줄지어 있어야 진짜다
 OFF_SEL, OFF_SEL_NOW, OFF_SEL_SYNC = 0x168, 0x3b0, 0x348   # 플레이어 -> 선택 물체 -> 방금 고른 유닛 / 게임이 확정한 유닛
 OFF_SPRITE, OFF_POS = 0x60, 0x170           # 유닛 -> 그리기 물체 -> 위치 (x, y, z)
 OFF_CAM, OFF_CAM_TARGET, OFF_CAM_DIST = 0x228, 0xc0, 0x108   # CWorldFrameWar3 -> CCamera -> 보는 점 / 거리
 OFF_VP = 0x58                               # CTextTagManager: 화면 변환 행렬
 OFF_HOVER = 0x468                           # CWorldFrameWar3: 지금 마우스 아래에 있는 유닛
+OFF_MINIMAP, OFF_MM_RECT, OFF_MM_SCREEN, OFF_MM_WORLD = 0x2f0, 0x1e0, 0x234, 0x290   # 월드프레임 -> CMinimap: 자리(아래,왼,위,오른) / 화면 범위 / 맵 범위
+MINI_CAL = {}                               # (게임 pid, 창 크기) -> 미니맵 눈금 (px, py, X, Y, kx, ky, 맵 범위)
 u32.WindowFromPoint.argtypes, u32.WindowFromPoint.restype = [W.POINT], W.HWND
 u32.GetAncestor.argtypes, u32.GetAncestor.restype = [W.HWND, W.UINT], W.HWND
 u32.GetClientRect.argtypes = [W.HWND, ctypes.POINTER(W.RECT)]
@@ -1203,8 +1225,70 @@ class Clicker:
                 u32.keybd_event(held, u32.MapVirtualKeyW(held, 0), 3, 0)
         return False
 
+    def mini_click(self, px, py):
+        pt = W.POINT(round(px), round(py))
+        u32.ClientToScreen(self.h, ctypes.byref(pt))
+        if u32.GetForegroundWindow() != self.h or u32.GetAncestor(u32.WindowFromPoint(pt), 2) != self.h:
+            return False
+        u32.SetCursorPos(pt.x, pt.y)
+        u32.mouse_event(1, 1, 0, 0, 0)
+        u32.mouse_event(1, -1, 0, 0, 0)
+        time.sleep(0.1)
+        self.press()
+        return True
+
+    def calibrate(self):
+        """미니맵 두 군데를 눌러 '미니맵 픽셀 -> 월드 좌표' 눈금을 맞춘다 (게임마다 한 번). 안 되면 None."""
+        d = self.g.read(self.rq(self.g.world[0] + OFF_MINIMAP), OFF_MM_WORLD + 16)
+        if not d or len(d) < OFF_MM_WORLD + 16:
+            return None
+        bottom, left, top, right = struct.unpack_from('<4f', d, OFF_MM_RECT)
+        sl, st, sr = struct.unpack_from('<3f', d, OFF_MM_SCREEN)
+        wb = struct.unpack_from('<4f', d, OFF_MM_WORLD)
+        if not (0 <= left < right <= 0.8 and 0 <= bottom < top <= 0.6 and sl <= 0 < sr and 0.5 < st < 0.7 and wb[0] < wb[2] and wb[1] < wb[3]):
+            return None
+        Wd, Ht = self.rc.right, self.rc.bottom
+        # 조작판이 화면 가운데 4:3 에 놓였든 좌우로 늘어났든 둘 다에서 미니맵 안쪽인 구간만 누른다
+        lo, hi = max((left - sl) / (sr - sl), left / 0.8) * Wd, min((right - sl) / (sr - sl), right / 0.8) * Wd
+        y0, y1 = (1 - top / st) * Ht, (1 - bottom / st) * Ht
+        if hi - lo < 20:
+            return None
+        pts, got = [(lo + (hi - lo) * 0.3, y0 + (y1 - y0) * 0.35), (lo + (hi - lo) * 0.7, y0 + (y1 - y0) * 0.65)], []
+        for px, py in pts:
+            if not self.mini_click(px, py):
+                return None
+            time.sleep(0.2)
+            got.append(self.cam())
+        if not all(got):
+            return None
+        kx, ky = (got[1][0] - got[0][0]) / (pts[1][0] - pts[0][0]), (got[1][1] - got[0][1]) / (pts[1][1] - pts[0][1])
+        if not (5 < kx < 500 and -500 < ky < -5):      # 눌러도 화면이 안 따라왔다
+            return None
+        return (pts[0][0], pts[0][1], got[0][0], got[0][1], kx, ky, wb)
+
+    def jump(self, x, y):
+        """화면을 월드 (x, y) 로 한 번에 옮긴다: 미니맵을 누른다. 안 되면 False (그땐 방향키로 민다)."""
+        key = (self.g.pid, self.rc.right, self.rc.bottom)
+        cal = MINI_CAL.get(key) or self.calibrate()
+        if not cal:
+            return False
+        MINI_CAL[key] = cal
+        px, py, X, Y, kx, ky, wb = cal
+        x, y = min(max(x, wb[0]), wb[2]), min(max(y, wb[1]), wb[3])
+        c0 = c = self.cam()
+        if not self.mini_click(px + (x - X) / kx, py + (y - Y) / ky):
+            return False
+        for _ in range(8):
+            time.sleep(0.05)
+            c = self.cam()
+            if c and abs(c[0] - x) < 400 and abs(c[1] - y) < 400:
+                return True
+        if c and c0 and abs(c[0] - c0[0]) + abs(c[1] - c0[1]) < 50:
+            MINI_CAL.pop(key, None)                    # 화면이 아예 안 움직였다: 눈금을 다음에 다시 맞춘다
+        return False                                   # 움직이긴 했는데 못 닿았다 = 화면이 갈 수 없는 곳(맵 가장자리)
+
     def aim(self, p):
-        """유닛이 화면 가운데쯤 오게 방향키로 화면을 옮긴다 (최대 4초). 화면에 들어왔으면 True."""
+        """유닛이 누를 수 있는 자리에 오게 화면을 옮긴다: 미니맵을 눌러 한 번에, 모자라면 방향키로. 화면에 들어왔으면 True."""
         rc = self.rc
 
         def want():
@@ -1214,10 +1298,18 @@ class Clicker:
                         0x27 if s[0] > rc.right * 0.58 else 0x25 if s[0] < rc.right * 0.16 else None)
             xyz, c = self.where(p), self.cam()       # 카메라 뒤쪽이라 화면 좌표가 없다: 보는 점보다 남쪽이면 아래로
             return (0x28 if xyz[1] < c[1] else 0x26) if xyz and c else 0x28
-        return self.steer(want, 4) and bool(self.safe(self.body(p)))
+        xyz, secs = self.where(p), 4
+        if want() is not None and xyz:
+            self.jump(xyz[0], xyz[1])
+            if (self.g.pid, rc.right, rc.bottom) in MINI_CAL:
+                secs = 1.5                             # 미니맵으로 옮겼으면 방향키는 마무리만: 못 가는 곳에서 오래 끌지 않는다
+        return self.steer(want, secs) and bool(self.safe(self.body(p)))
 
     def back(self, to):
-        """화면을 처음 보던 곳으로 되돌린다 (방향키, 최대 3초). 카메라가 북쪽을 위로 본다고 가정한다(기본값)."""
+        """화면을 처음 보던 곳으로 되돌린다: 미니맵을 눌러 한 번에, 안 되면 방향키로 (카메라가 북쪽을 위로 본다고 가정)."""
+        c = self.cam()
+        if c and abs(c[0] - to[0]) < 150 and abs(c[1] - to[1]) < 150 or self.jump(to[0], to[1]):
+            return
         def want():
             c = self.cam()
             if not c:
@@ -1317,7 +1409,7 @@ class Clicker:
         마우스가 그 재료 위에 올라간 것을 게임에서 읽어 확인한 뒤에 누르고, 골라진 유닛도 다시 확인한다.
         겹쳐 서 있어서 마우스로 못 찾으면 둘레 유닛들을 옮겨 떨어뜨린 뒤 다시 한다."""
         g = self.g
-        keys = {struct.pack('<I', int.from_bytes(c.encode(), 'big')): k for c, k in opts}
+        keys = {struct.pack('<I', int.from_bytes(c.encode(), 'big')): k for c, k, *_ in opts}
         key_of = lambda p: keys.get((self.unit(p) or b'')[OFF_TYPE:OFF_TYPE + 4])
         name = lambda p: (g.read(p + OFF_TYPE, 4) or b'')[::-1] if p else None
         cx, cy = self.cam() or (0, 0)

@@ -114,7 +114,7 @@ body.mini #pins { display:block } body.mini #pins .it { display:block; padding:3
 <body>
 <header>
   <h1>원랜디 도우미</h1>
-  <span id="st" class="pill">연결 중…</span><span id="age" class="warn" style="font-size:12px"></span>
+  <span id="st" class="pill">연결 중…</span><span id="res" class="dim" style="font-size:12px"></span><span id="age" class="warn" style="font-size:12px"></span>
   <select id="owner" title="내 슬롯"></select>
   <span class="seg" id="mode"><button data-m="자동">자동</button><button data-m="물딜">물딜</button><button data-m="마딜">마딜</button></span>
   <a id="upd" class="pill" style="display:none;color:var(--gold);border-color:#6b5520;text-decoration:none" target="_blank"></a>
@@ -679,9 +679,19 @@ function sendPlan(id) {
   const ids = [...pr.seq, id];
   return ids.every(i => canSend(items[i])) ? ids.map(i => [i, chatCmd(items[i])]) : null;
 }
+// 이 순서를 다 하는 데 드는 [목재, 골드] (버튼 조합만: 맵에 적힌 값. 명령어 조합은 맵에 안 적혀 있어 모른다)
+function planCost(plan) {
+  let w = 0, g = 0;
+  for (const [i] of plan || []) { const c = (srv.costs || {})[i]; if (c) { w += c[0]; g += c[1]; } }
+  return [w, g];
+}
+const costText = ([w, g]) => [w ? `목재 ${w}` : '', g ? `골드 ${g.toLocaleString()}` : ''].filter(Boolean).join(' · ');
+const lacks = ([w, g]) => srv.gold != null && (w > srv.wood || g > srv.gold);
 function sendChat(id) {
   const plan = sendPlan(id);
   if (!plan) return toast('지금은 게임에서 대신 조합할 수 없어요');
+  const cost = planCost(plan);
+  if (lacks(cost)) return toast(`자원이 모자라요 · 필요: ${costText(cost)} · 보유: 목재 ${srv.wood} · 골드 ${srv.gold.toLocaleString()}`);
   if (plan.length > 1) toast(`게임에서 조합 중… ${plan.length}단계 · 끝날 때까지 마우스를 건드리지 마세요`);
   fetch('/combine', { method: 'POST', body: JSON.stringify(plan) }).then(r => r.text())
     .then(t => toast(t === 'ok' ? `게임에서 조합했어요: ${nm(id)}` : t, t === 'ok' ? 'ok' : ''));
@@ -707,7 +717,7 @@ function openRecipe(id, push = true) {
   $('mbox').innerHTML =
     `<div class="mh">${mstack.length > 1 ? '<button class="ibtn" data-act="back">←</button>' : ''}<b>${esc(it.name)} <span style="color:${gcolor(it.grade)}">- ${esc(it.grade)}</span></b>` +
     (craft && it.rank >= REC_FROM && it.rank < REC_TO ? `<button class="ibtn" data-ex="${id}">${excluded.has(id) ? '추천에 다시 넣기' : '추천에서 빼기'}</button>` : '') +
-    (craft && sendPlan(id) ? `<button class="ibtn" data-chat="${id}" title="게임에서 재료 유닛을 고르고 조합 단축키(또는 명령어)를 대신 눌러요">⌨ 게임에서 조합${sendPlan(id).length > 1 ? ` (${sendPlan(id).length}단계)` : chatCmd(it) ? ` (${esc(chatCmd(it))})` : ''}</button>` : '') +
+    (craft && sendPlan(id) ? `<button class="ibtn" data-chat="${id}" title="게임에서 재료 유닛을 고르고 조합 단축키(또는 명령어)를 대신 눌러요">⌨ 게임에서 조합${sendPlan(id).length > 1 ? ` (${sendPlan(id).length}단계)` : chatCmd(it) ? ` (${esc(chatCmd(it))})` : ''}${costText(planCost(sendPlan(id))) ? ` · <span class="${lacks(planCost(sendPlan(id))) ? 'bad' : 'dim'}">${costText(planCost(sendPlan(id)))}${lacks(planCost(sendPlan(id))) ? ' 모자람' : ''}</span>` : ''}</button>` : '') +
     (craft ? `<button class="ibtn" data-act="pin">${pinned ? '📌 찜 해제' : '📌 찜하기'}</button>` : '') +
     `<span class="${n ? 'ok' : 'dim'}">보유 ${n}</span><button class="ibtn" data-act="close">✕</button></div>` +
     (it.descr ? `<div class="sec">${esc(it.descr)}</div>` : '') +
@@ -936,6 +946,7 @@ async function tick() {
     const s = await (await fetch('/counts', { cache: 'no-store' })).json();
     $('st').textContent = s.status === '첫 스캔 중' ? `첫 스캔 ${s.scan || 0}%` : s.status.startsWith('연결됨 (') ? `연결됨 · 나머지 ${s.scan || 0}%` : s.status;
     $('st').classList.toggle('on', s.status.startsWith('연결됨'));
+    $('res').textContent = s.gold != null ? `골드 ${s.gold.toLocaleString()} · 목재 ${s.wood}` : '';
     const slots = [...new Set([...Object.keys(s.players).map(Number), s.owner])].sort((a, b) => a - b);
     const opts = `<option value="auto"${s.auto ? ' selected' : ''}>자동 (${s.owner + 1}번)</option>` +
       slots.map(k => `<option value="${k}"${!s.auto && k === s.owner ? ' selected' : ''}>${k + 1}번 ${k === 7 ? '(전시용)' : esc((s.names?.[k] || '').split('#')[0])} ${s.players[k] || 0}마리</option>`).join('');

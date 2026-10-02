@@ -183,7 +183,7 @@ def _objects(d, strings, extra):
 
 
 def map_combos(path, mapping):
-    """조합 버튼: {결과 sions id: [[버튼을 가진 유닛 코드, 단축키], ...]}.
+    """조합 버튼: {결과 sions id: [[버튼을 가진 유닛 코드, 단축키, 드는 목재, 드는 골드], ...]}.
     유닛 스킬 중 툴팁이 '조합(Z)'·'변화(B)' 인 것. 설명에 '▶ 킹 - 전설' / '변화 유닛 : 베이비5 - 변화' 로 결과 유닛 이름이 적혀 있다.
     다른 유닛을 찍어야 하는 조합(Auhf 기반)은 뺀다."""
     mpq = MPQ(path)
@@ -200,8 +200,10 @@ def map_combos(path, mapping):
             key = re.fullmatch(r'(?:조합|변화)\(([A-Z])\)', str(ab.get('atp1') or '').strip())
             res = re.search(r'(?:▶|변화 유닛\s*:)\s*([^\r\n]+)', str(ab.get('aub1') or ''))
             sid = res and by_name.get(res.group(1).strip())
-            if key and sid is not None and ab['_orig'] != 'Auhf' and [code, key.group(1)] not in out.setdefault(sid, []):
-                out[sid].append([code, key.group(1)])
+            if key and sid is not None and ab['_orig'] != 'Auhf' and all(e[:2] != [code, key.group(1)] for e in out.setdefault(sid, [])):
+                tip = str(ab.get('aub1') or '')          # 설명에 '목재 3', '5000 골드' 처럼 드는 값이 적혀 있다
+                wood, gold = re.search(r'목재\s*(\d+)', tip), re.search(r'(\d+)\s*골드', tip)
+                out[sid].append([code, key.group(1), int(wood.group(1)) if wood else 0, int(gold.group(1)) if gold else 0])
     return {k: v for k, v in out.items() if v}
 
 
