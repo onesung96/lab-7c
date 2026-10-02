@@ -550,7 +550,8 @@ function renderGrid() {
         '\n재료\n' + it.recipes.map(([m, k]) => `${(counts[m] || 0) >= k ? '✔' : '✘'} ${nm(m)} ${Math.min(counts[m] || 0, k)}/${k}`).join('\n') +
         (Object.keys(pr.miss).length ? `\n\n부족한 재료 (최하위)\n${lackText(pr.miss)}` : '') +
         (specialLack(pr).length ? `\n\n⚠ 특수 재료 필요 (조합으로 못 만듦): ${specialLack(pr).join(', ')}` : '') : '');
-      const label = !craft ? '' : ready ? (canSend(it) ? `<span class="pc full" data-chat="${it.id}" style="cursor:pointer;text-decoration:underline">조합⌨</span>` : '<span class="pc full">가능</span>') : pc >= 100 ? `<span class="pc hi">${stepLabel(pr)}</span>` : `<span class="pc">${pc}%</span>`;
+      const plan = craft && pc >= 100 && sendPlan(it.id), tag = plan ? ` data-chat="${it.id}" style="cursor:pointer;text-decoration:underline"` : '';
+      const label = !craft ? '' : ready ? `<span class="pc full"${tag}>${plan ? '조합⌨' : '가능'}</span>` : pc >= 100 ? `<span class="pc hi"${tag}>${stepLabel(pr)}${plan ? '⌨' : ''}</span>` : `<span class="pc">${pc}%</span>`;
       const memo = memos[it.id] ? `<span title="${esc(memos[it.id])}">📝</span>` : '';
       const name = memo + (query ? esc(it.name).replace(new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'), '<mark>$&</mark>') : esc(it.name));
       rows.push({ idx, sort: (pr ? pr.pct : 0) + (ready ? 1 : 0), steps: pr ? pr.steps : 0, n,
@@ -665,10 +666,22 @@ function chatCmd(it) {
 }
 // 게임에서 대신 조합해 줄 수 있는 유닛인가: 명령어가 있거나(위), 재료 유닛에 조합 버튼(Z/X/C)이 있거나(프로그램이 맵에서 뽑아 둔 목록)
 const canSend = it => !!chatCmd(it) || (srv.combos || []).includes(it.id);
+// 게임에서 대신 조합할 순서: 중간 조합들 + 마지막. 재료가 다 모였고(100%) 모든 단계를 대신 누를 수 있을 때만.
+// 흔함선택위습을 써야 하는 조합은 어떤 흔함으로 바꿀지 게임에서 골라야 해서 뺀다.
+function sendPlan(id) {
+  const it = items[id];
+  if (!it || !it.recipes.length || it.lowest) return null;
+  const pr = progress(id);
+  if (pr.pct < 1 || Object.keys(pr.wild).length) return null;
+  const ids = [...pr.seq, id];
+  return ids.every(i => canSend(items[i])) ? ids.map(i => [i, chatCmd(items[i])]) : null;
+}
 function sendChat(id) {
-  const cmd = chatCmd(items[id]);
-  (cmd ? fetch('/chat', { method: 'POST', body: cmd }) : fetch('/combine', { method: 'POST', body: String(id) }))
-    .then(r => r.text()).then(t => toast(t === 'ok' ? (cmd ? `게임에 입력했어요: ${cmd}` : `게임에서 조합 버튼을 눌렀어요: ${nm(id)}`) : t, t === 'ok' ? 'ok' : ''));
+  const plan = sendPlan(id);
+  if (!plan) return toast('지금은 게임에서 대신 조합할 수 없어요');
+  if (plan.length > 1) toast(`게임에서 조합 중… ${plan.length}단계 · 끝날 때까지 마우스를 건드리지 마세요`);
+  fetch('/combine', { method: 'POST', body: JSON.stringify(plan) }).then(r => r.text())
+    .then(t => toast(t === 'ok' ? `게임에서 조합했어요: ${nm(id)}` : t, t === 'ok' ? 'ok' : ''));
 }
 
 // ───────── 조합식 창 ─────────
@@ -691,7 +704,7 @@ function openRecipe(id, push = true) {
   $('mbox').innerHTML =
     `<div class="mh">${mstack.length > 1 ? '<button class="ibtn" data-act="back">←</button>' : ''}<b>${esc(it.name)} <span style="color:${gcolor(it.grade)}">- ${esc(it.grade)}</span></b>` +
     (craft && it.rank >= REC_FROM && it.rank < REC_TO ? `<button class="ibtn" data-ex="${id}">${excluded.has(id) ? '추천에 다시 넣기' : '추천에서 빼기'}</button>` : '') +
-    (craft && canSend(it) ? `<button class="ibtn" data-chat="${id}" title="${chatCmd(it) ? '게임 채팅에 조합 명령어를 대신 입력해요' : '게임 화면에서 재료 유닛을 고르고 조합 단축키를 대신 눌러요 (재료 유닛이 화면에 보여야 해요)'}">⌨ 게임에서 조합${chatCmd(it) ? ` (${esc(chatCmd(it))})` : ''}</button>` : '') +
+    (craft && sendPlan(id) ? `<button class="ibtn" data-chat="${id}" title="게임에서 재료 유닛을 고르고 조합 단축키(또는 명령어)를 대신 눌러요">⌨ 게임에서 조합${sendPlan(id).length > 1 ? ` (${sendPlan(id).length}단계)` : chatCmd(it) ? ` (${esc(chatCmd(it))})` : ''}</button>` : '') +
     (craft ? `<button class="ibtn" data-act="pin">${pinned ? '📌 찜 해제' : '📌 찜하기'}</button>` : '') +
     `<span class="${n ? 'ok' : 'dim'}">보유 ${n}</span><button class="ibtn" data-act="close">✕</button></div>` +
     (it.descr ? `<div class="sec">${esc(it.descr)}</div>` : '') +
