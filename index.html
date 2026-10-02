@@ -41,7 +41,7 @@ input[type=number] { width:70px }
 /* strips */
 .strip { margin:8px 12px 0; padding:6px 10px; border-radius:8px; font-size:12px; display:flex; flex-wrap:wrap; gap:5px 14px; align-items:center }
 #tips { background:#161b24; border:1px solid var(--line) } #tips b { color:var(--acc) }
-.gx { font-style:normal; font-weight:400; font-size:11px; color:var(--mute); cursor:pointer; margin-left:6px } .gx:hover { color:var(--bad) }
+.gx { font-style:normal; font-weight:400; font-size:11px; color:var(--mute); cursor:pointer; margin-left:6px; white-space:nowrap } .gx:hover { color:var(--bad) }
 .tree, .tree ul { list-style:none; margin:0; padding-left:16px } .tree { padding-left:0 } .tree li { padding:1px 0 } .tree .tn { cursor:pointer } .tree .tn:hover { color:var(--acc) }
 #plan { background:#231d10; border:1px solid #5a4717 } #plan .it b { color:var(--gold) } .arrow { color:var(--dim) }
 #recbar { display:grid; grid-template-columns:repeat(auto-fill, minmax(240px, 1fr)); gap:8px; padding:0; background:none; border:0 }
@@ -54,7 +54,7 @@ input[type=number] { width:70px }
 .bd { font-size:12px; padding:1px 7px; border-radius:5px; background:#173427; color:#8fe0b5; font-weight:600 } .bd.neg { background:#3a1d1d; color:#ffa3a3 }
 .rbar { height:4px; background:#0b0d11; border-radius:2px; overflow:hidden } .rbar div { height:100%; background:var(--acc) }
 .rx { background:none; border:0; color:var(--mute); cursor:pointer; padding:0 0 0 4px; font-size:12px } .rx:hover { color:var(--bad) }
-.rc .r0 { margin-top:4px; font-size:12px; color:var(--gold) }
+.rc .r0 { margin-top:4px; font-size:12px; color:var(--gold); white-space:nowrap; overflow:hidden; text-overflow:ellipsis }   /* 한 줄로: 카드 높이가 들쭉날쭉하지 않게 */
 .rc .r3 { margin-top:4px; font-size:11.5px; color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis } #pins { background:#241f14; border:1px solid #4a3d1c }
 .strip b { font-size:12px } .strip .it { cursor:pointer } .strip .it:hover { color:var(--acc) }
 .star { color:var(--gold) } .pin { color:#ffb86b }
@@ -72,6 +72,11 @@ input[type=number] { width:70px }
 .cell .nm { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:12px; position:relative }
 .cell .pc { font-size:11px; color:#7d8594; position:relative; min-width:30px; text-align:right }
 .cell .pc.hi { color:var(--warn) } .cell .pc.full { color:var(--ok); font-weight:700 }
+/* 누르면 게임에서 대신 조합하는 단추: 초록 = 바로, 노랑 = 중간 조합 N번 거쳐서 */
+.go { background:#1f7a4a; color:#fff; border:0; border-radius:4px; padding:1px 7px; font:700 11px/16px inherit; cursor:pointer; white-space:nowrap }
+.go:hover { background:#28a062 } .go.hi { background:#8a6a1a } .go.hi:hover { background:#b08a22 }
+.cell .pc.go { color:#fff; padding:0 6px; min-width:0; line-height:15px } .rc .go { font-size:12px; padding:2px 9px }
+body.bigwin #openOverlay, body.bigwin #openMini { display:none }   /* 게임 위 큰 창에서는 쓸 일 없는 단추 */
 .cell .ct { min-width:14px; text-align:right; font-weight:700; font-size:12px; color:var(--acc); position:relative }
 .cell .q { flex:none; width:15px; height:15px; border-radius:50%; border:1px solid #4a5160; color:#9aa3b2; background:none; font:10px/13px sans-serif; padding:0; cursor:pointer; position:relative }
 .cell .q:hover { border-color:var(--acc); color:var(--acc) }
@@ -135,7 +140,7 @@ body.mini #pins { display:block } body.mini #pins .it { display:block; padding:3
   <span id="hiddenBar"></span>
   <span>접기 <span class="seg" id="gfilter"><button data-f="0">안 접음</button><button data-f="30">30%↓</button><button data-f="50">50%↓</button><button data-f="70">70%↓</button></span></span>
   <span class="seg" id="gsort"><button data-s="pct">진행률순</button><button data-s="orig">sions 순서</button></span>
-  <span><b class="ok">가능</b> 지금 바로 · <b class="warn">N단계</b> 중간 조합 N번 · <b>%</b> 하위 재료까지 진행률(위습 제외) · <span class="star">★</span> 추천 · <span class="pin">📌</span> 찜 · <b>?</b> 조합식</span>
+  <span><span class="go">조합</span> <span class="go hi">N단계</span> 누르면 게임에서 대신 조합 · <b class="ok">가능</b> 지금 바로 · <b class="warn">N단계</b> 중간 조합 N번 · <b>%</b> 하위 재료까지 진행률(위습 제외) · <span class="star">★</span> 추천 · <span class="pin">📌</span> 찜 · <b>?</b> 조합식</span>
 </div>
 <div id="grid"></div>
 <div id="modal" class="ov" hidden><div class="box" id="mbox"></div></div>
@@ -431,12 +436,13 @@ function postSummary(warns, plan) {
 // 추천 카드: 이름 / 등급 · 채워 주는 스탯 배지 / 진행률 막대 / 부족한 재료
 function recCard(x) {
   const pc = Math.round(Math.min(x.pr.pct, 1) * 100), lack = lackText(x.pr.miss);
-  const st = x.ready ? '<b class="ok">바로 가능</b>' : x.pr.pct >= 1 ? `<b class="warn">${stepLabel(x.pr)}</b>` : `<b>${pc}%</b>`;
+  const st = x.pr.pct >= 1 && sendPlan(x.it.id) ? `<button class="go${x.ready ? '' : ' hi'}" data-chat="${x.it.id}" title="누르면 게임에서 대신 조합해요">${x.ready ? '조합' : stepLabel(x.pr)}</button>`
+    : x.ready ? '<b class="ok">바로 가능</b>' : x.pr.pct >= 1 ? `<b class="warn">${stepLabel(x.pr)}</b>` : `<b>${pc}%</b>`;
   return `<div class="rc it" data-id="${x.it.id}" title="${esc(x.it.name)}${lack ? '\n부족: ' + esc(lack) : ''}">` +
     `<div class="r1">${imgTag(x.it)}<span class="rn"><span class="star">★</span> ${esc(short(x.it.name))}</span><span class="rg" style="color:${gcolor(x.it.grade)}">${esc(x.it.grade.split(' ')[0])}</span><span class="rs">${st}</span><button class="rx" data-ex="${x.it.id}" title="이 유닛은 추천에서 빼기">✕</button></div>` +
     `<div class="r2">${x.gains.map(([k, d]) => `<span class="bd${d < 0 ? ' neg' : ''}">${k} ${d > 0 ? '+' : ''}${d}</span>`).join('')}</div>` +
     `<div class="rbar"><div style="width:${pc}%"></div></div>` +
-    (x.reason ? `<div class="r0">💡 ${esc(x.reason)}</div>` : '') +
+    (x.reason ? `<div class="r0" title="${esc(x.reason)}">💡 ${esc(x.reason)}</div>` : '') +
     `<div class="r3">${x.ready ? '<span class="ok">재료 다 있음</span>' : x.pr.pct >= 1 ? (wildText(x.pr) || `중간 조합 ${x.pr.steps}번이면 완성`) : '부족: ' + esc(lack) + (wispsNeeded(x.pr.miss) ? ` · 랜덤위습 약 ${wispsNeeded(x.pr.miss)}개` : '')}</div></div>`;
 }
 const imgTag = (it, cls = '') => it.img ? `<img class="${cls}" src="${THUMB + it.img}" referrerpolicy="no-referrer" loading="lazy" onerror="this.style.visibility='hidden'">` : `<img class="${cls}" style="visibility:hidden">`;
@@ -553,8 +559,9 @@ function renderGrid() {
         '\n재료\n' + it.recipes.map(([m, k]) => `${(counts[m] || 0) >= k ? '✔' : '✘'} ${nm(m)} ${Math.min(counts[m] || 0, k)}/${k}`).join('\n') +
         (Object.keys(pr.miss).length ? `\n\n부족한 재료 (최하위)\n${lackText(pr.miss)}` : '') +
         (specialLack(pr).length ? `\n\n⚠ 특수 재료 필요 (조합으로 못 만듦): ${specialLack(pr).join(', ')}` : '') : '');
-      const plan = craft && pc >= 100 && sendPlan(it.id), tag = plan ? ` data-chat="${it.id}" style="cursor:pointer;text-decoration:underline"` : '';
-      const label = !craft ? '' : ready ? `<span class="pc full"${tag}>${plan ? '조합⌨' : '가능'}</span>` : pc >= 100 ? `<span class="pc hi"${tag}>${stepLabel(pr)}${plan ? '⌨' : ''}</span>` : `<span class="pc">${pc}%</span>`;
+      const plan = craft && pc >= 100 && sendPlan(it.id);
+      const label = !craft ? '' : plan ? `<span class="pc go${ready ? '' : ' hi'}" data-chat="${it.id}" title="누르면 게임에서 대신 조합해요">${ready ? '조합' : stepLabel(pr)}</span>`
+        : ready ? '<span class="pc full">가능</span>' : pc >= 100 ? `<span class="pc hi">${stepLabel(pr)}</span>` : `<span class="pc">${pc}%</span>`;
       const memo = memos[it.id] ? `<span title="${esc(memos[it.id])}">📝</span>` : '';
       const name = memo + (query ? esc(it.name).replace(new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'), '<mark>$&</mark>') : esc(it.name));
       rows.push({ idx, sort: (pr ? pr.pct : 0) + (ready ? 1 : 0), steps: pr ? pr.steps : 0, n,
@@ -604,7 +611,7 @@ function renderGrid() {
   let cols = null;
   for (let H = Math.max(8, Math.ceil(total / ncol)); !cols; H++) cols = pack(H);
   while (cols.length < ncol) cols.push({ parts: [] });   // 단 폭 일정하게
-  const head = (b, part) => `<div class="gh" style="--gc:${b.gc}">${esc(b.name)}${part ? ' <small>(계속)</small>' : `<i class="gx" data-hide="${esc(b.name)}" title="이 등급 숨기기">숨김</i>`}<span>${!part && b.have ? b.have + '마리' : ''}</span></div>`;
+  const head = (b, part) => `<div class="gh" style="--gc:${b.gc}" title="${esc(b.name)}">${esc(b.name.split(' :')[0])}${part ? ' <small>(계속)</small>' : `<i class="gx" data-hide="${esc(b.name)}" title="이 등급 숨기기">숨김</i>`}<span>${!part && b.have ? b.have + '마리' : ''}</span></div>`;
   $('grid').innerHTML = cols.map(c => `<div class="gcol">${c.parts.map(x => `<div class="grp">${head(x.b, x.part)}${x.b.cells.slice(x.start, x.start + x.take).join('')}</div>`).join('')}</div>`).join('');
 }
 
@@ -687,14 +694,18 @@ function planCost(plan) {
 }
 const costText = ([w, g]) => [w ? `목재 ${w}` : '', g ? `골드 ${g.toLocaleString()}` : ''].filter(Boolean).join(' · ');
 const lacks = ([w, g]) => srv.gold != null && (w > srv.wood || g > srv.gold);
+let sending = false;   // 조합을 보내 놓고 끝나기 전: 또 눌러도 보내지 않는다
 function sendChat(id) {
+  if (sending) return toast('조합하는 중이에요. 끝나면 다시 눌러 주세요');
   const plan = sendPlan(id);
   if (!plan) return toast('지금은 게임에서 대신 조합할 수 없어요');
   const cost = planCost(plan);
   if (lacks(cost)) return toast(`자원이 모자라요 · 필요: ${costText(cost)} · 보유: 목재 ${srv.wood} · 골드 ${srv.gold.toLocaleString()}`);
-  if (plan.length > 1) toast(`게임에서 조합 중… ${plan.length}단계 · 끝날 때까지 마우스를 건드리지 마세요`);
+  if (plan.length > 1) toast(`게임에서 조합 중… ${plan.length}단계 · 마우스는 그대로 두세요 · 멈추려면 Esc`);
+  sending = true;
   fetch('/combine', { method: 'POST', body: JSON.stringify(plan) }).then(r => r.text())
-    .then(t => toast(t === 'ok' ? `게임에서 조합했어요: ${nm(id)}` : t, t === 'ok' ? 'ok' : ''));
+    .then(t => toast(t === 'ok' ? `게임에서 조합했어요: ${nm(id)}` : t, t === 'ok' ? 'ok' : ''), () => toast('프로그램에 연결하지 못했어요'))
+    .finally(() => { sending = false; });
 }
 
 // ───────── 조합식 창 ─────────
@@ -717,7 +728,7 @@ function openRecipe(id, push = true) {
   $('mbox').innerHTML =
     `<div class="mh">${mstack.length > 1 ? '<button class="ibtn" data-act="back">←</button>' : ''}<b>${esc(it.name)} <span style="color:${gcolor(it.grade)}">- ${esc(it.grade)}</span></b>` +
     (craft && it.rank >= REC_FROM && it.rank < REC_TO ? `<button class="ibtn" data-ex="${id}">${excluded.has(id) ? '추천에 다시 넣기' : '추천에서 빼기'}</button>` : '') +
-    (craft && sendPlan(id) ? `<button class="ibtn" data-chat="${id}" title="게임에서 재료 유닛을 고르고 조합 단축키(또는 명령어)를 대신 눌러요">⌨ 게임에서 조합${sendPlan(id).length > 1 ? ` (${sendPlan(id).length}단계)` : chatCmd(it) ? ` (${esc(chatCmd(it))})` : ''}${costText(planCost(sendPlan(id))) ? ` · <span class="${lacks(planCost(sendPlan(id))) ? 'bad' : 'dim'}">${costText(planCost(sendPlan(id)))}${lacks(planCost(sendPlan(id))) ? ' 모자람' : ''}</span>` : ''}</button>` : '') +
+    (craft && sendPlan(id) ? `<button class="ibtn" data-chat="${id}" title="게임에서 재료 유닛을 고르고 조합 단축키(또는 명령어)를 대신 눌러요">게임에서 조합${sendPlan(id).length > 1 ? ` (${sendPlan(id).length}단계)` : chatCmd(it) ? ` (${esc(chatCmd(it))})` : ''}${costText(planCost(sendPlan(id))) ? ` · <span class="${lacks(planCost(sendPlan(id))) ? 'bad' : 'dim'}">${costText(planCost(sendPlan(id)))}${lacks(planCost(sendPlan(id))) ? ' 모자람' : ''}</span>` : ''}</button>` : '') +
     (craft ? `<button class="ibtn" data-act="pin">${pinned ? '📌 찜 해제' : '📌 찜하기'}</button>` : '') +
     `<span class="${n ? 'ok' : 'dim'}">보유 ${n}</span><button class="ibtn" data-act="close">✕</button></div>` +
     (it.descr ? `<div class="sec">${esc(it.descr)}</div>` : '') +
@@ -904,6 +915,7 @@ document.addEventListener('keydown', e => {
 // ───────── 시작 ─────────
 async function init() {
   if (MINI) document.body.classList.add('mini');
+  if (OV) document.body.classList.add('bigwin');
   let d = null;
   try { d = await (await fetch('/data')).json(); } catch {}
   if (!d || !d.groups) return setTimeout(init, 1000);   // 프로그램이 막 켜져서 조합 데이터를 아직 못 읽었다: 여기서 멈추면 '연결 중'에서 영영 안 넘어간다

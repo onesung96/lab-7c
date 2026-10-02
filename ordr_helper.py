@@ -11,7 +11,7 @@
 import ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.7.2'
+VERSION = '1.7.3'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -970,6 +970,7 @@ def self_update():
         f'del "{zpath}"\r\n'
         f'start "" "{sys.executable}" {args}\r\n'
         'del "%~f0"\r\n')
+    chat_lock.acquire(timeout=120)   # 게임에서 조합하는 중이면 끝날 때까지 기다린다: 마우스·키를 쥔 채로 꺼지면 안 된다
     subprocess.Popen(['cmd', '/c', bat], creationflags=0x08000000 | 0x00000200, close_fds=True)   # 창 없이, 우리와 따로
     threading.Timer(1.0, quit_app).start()
 
@@ -1075,62 +1076,72 @@ u32.ClientToScreen.argtypes = [W.HWND, ctypes.POINTER(W.POINT)]
 def game_steps(steps):
     """페이지에서 누른 조합을 게임에서 차례로 한다. steps = [[만들 유닛의 sions id, 채팅 명령어 또는 '']].
     한 단계가 끝나면 그 유닛이 실제로 생겼는지 확인하고 다음으로 간다 (안 생겼으면 거기서 멈춘다)."""
-    with chat_lock:
+    if not chat_lock.acquire(blocking=False):   # 버튼을 두 번 눌렀을 때 줄 서서 또 돌면, 재료가 남아 있는 한 한 번 더 조합해 버린다
+        return '이미 조합하는 중이에요'
+    try:
         g = LIVE['g']
         if not g or not g.world or not g.alive():
             return '게임 중이 아니에요'
-        prev, old, ui, cam0 = u32.GetForegroundWindow(), W.POINT(), None, None
-        big = big_window()
-        big = big if big_shown(big) else None   # 큰 창이 게임 화면을 가리니 조합하는 동안 감춘다
+        return _steps(g, steps)
+    finally:
+        chat_lock.release()
+
+
+def _steps(g, steps):
+    prev, old, ui, cam0 = u32.GetForegroundWindow(), W.POINT(), None, None
+    big = big_window()
+    big = big if big_shown(big) else None   # 큰 창이 게임 화면을 가리니 조합하는 동안 감춘다
+    if big:
+        big_show(big, False)
+    u32.GetCursorPos(ctypes.byref(old))
+    try:
+        me = g.local_slot()
+        if me is None:
+            return '내 플레이어를 못 찾았어요 (게임이 업데이트된 것 같아요)'
+        for i, (sid, cmd) in enumerate(steps):
+            if u32.GetAsyncKeyState(0x1B) & 0x8000:
+                return f'Esc 로 멈췄어요 ({i}/{len(steps)}단계까지 함)'
+            before = mine_of(g, me, sid)
+            if not cmd:
+                ui = Clicker(g, me)
+                cam0 = cam0 or (not ui.err and ui.cam()) or None   # 처음 보던 곳: 끝나면 돌아온다
+            msg = _chat(cmd) if cmd else ui.err or ui.combine(COMBOS[sid])
+            print(f'조합 {i + 1}/{len(steps)} id={sid} {cmd or "버튼"}: {msg}')
+            if msg != 'ok':
+                return msg if len(steps) == 1 else f'{i + 1}번째 조합에서 멈췄어요: {msg}'
+            slow = not cmd and any(k == 'B' for _, k, *_ in COMBOS[sid])   # 변화는 시전에 10초가 걸린다
+            for _ in range(130 if slow else 30):   # 결과 유닛이 생기거나 누른 재료가 사라질 때까지 (최대 3초)
+                time.sleep(0.1)
+                if mine_of(g, me, sid) - before or (not cmd and not slow and not ui.unit(ui.last)):
+                    break
+            else:
+                print(f'조합 {i + 1}/{len(steps)} id={sid}: 결과 유닛이 안 생김')
+                if cmd and i + 1 == len(steps):
+                    return f'명령어({cmd})는 입력했는데 새 유닛이 안 보여요. 게임에서 조합됐는지 확인해 주세요'
+                return (f'{i + 1}번째 조합이 게임에서 안 됐어요. ' if len(steps) > 1 else '게임에서 조합이 안 됐어요. ') + '목재·골드·재료를 확인해 주세요'
+            time.sleep(0.15)
+        return 'ok'
+    except Exception as e:
+        traceback.print_exc()
+        return f'조합하지 못했어요: {e}'
+    finally:   # 화면을 처음 보던 곳으로 -> 원래 창(페이지)으로 -> 마우스 제자리. 창보다 마우스를 먼저 돌리면 게임이 화면을 밀어 버린다
+        if cam0 and ui and not ui.err:
+            ui.back(cam0)
         if big:
-            big_show(big, False)
-        u32.GetCursorPos(ctypes.byref(old))
-        try:
-            me = g.local_slot()
-            if me is None:
-                return '내 플레이어를 못 찾았어요 (게임이 업데이트된 것 같아요)'
-            for i, (sid, cmd) in enumerate(steps):
-                before = mine_of(g, me, sid)
-                if not cmd:
-                    ui = Clicker(g, me)
-                    cam0 = cam0 or (not ui.err and ui.cam()) or None   # 처음 보던 곳: 끝나면 돌아온다
-                msg = _chat(cmd) if cmd else ui.err or ui.combine(COMBOS[sid])
-                print(f'조합 {i + 1}/{len(steps)} id={sid} {cmd or "버튼"}: {msg}')
-                if msg != 'ok':
-                    return msg if len(steps) == 1 else f'{i + 1}번째 조합에서 멈췄어요: {msg}'
-                for _ in range(30):          # 결과 유닛이 생길 때까지 (최대 3초)
-                    time.sleep(0.1)
-                    made = mine_of(g, me, sid) - before
-                    if made:
-                        break
-                else:
-                    print(f'조합 {i + 1}/{len(steps)} id={sid}: 결과 유닛이 안 생김')
-                    if cmd and i + 1 == len(steps):
-                        return f'명령어({cmd})는 입력했는데 새 유닛이 안 보여요. 게임에서 조합됐는지 확인해 주세요'
-                    return (f'{i + 1}번째 조합이 게임에서 안 됐어요. ' if len(steps) > 1 else '게임에서 조합이 안 됐어요. ') + '목재·골드·재료를 확인해 주세요'
-                time.sleep(0.15)
-            return 'ok'
-        except Exception as e:
-            traceback.print_exc()
-            return f'조합하지 못했어요: {e}'
-        finally:   # 화면을 처음 보던 곳으로 -> 원래 창(페이지)으로 -> 마우스 제자리. 창보다 마우스를 먼저 돌리면 게임이 화면을 밀어 버린다
-            if cam0 and ui and not ui.err:
-                ui.back(cam0)
-            if big:
-                big_show(big, True)
-            gh, r = game_window(g.pid), W.RECT()
-            if prev and prev != gh and prev != u32.GetForegroundWindow():
-                front(prev)
-                for _ in range(10):
-                    if u32.GetForegroundWindow() != gh:
-                        break
-                    time.sleep(0.05)
-            u32.GetWindowRect(gh, ctypes.byref(r))
-            inside = r.left <= old.x < r.right and r.top <= old.y < r.bottom
-            stuck = u32.GetForegroundWindow() == gh and not inside
-            print(f'끝: 게임이 앞={u32.GetForegroundWindow() == gh} 마우스 원래 자리가 게임 안={inside}')
-            if not stuck:   # 게임이 앞에 남았는데 마우스만 다른 모니터로 보내면 게임이 화면을 그쪽으로 계속 민다
-                u32.SetCursorPos(old.x, old.y)
+            big_show(big, True)
+        gh, r = game_window(g.pid), W.RECT()
+        if prev and prev != gh and prev != big and prev != u32.GetForegroundWindow():   # 큰 창에서 눌렀으면 초점은 게임에 둔다
+            front(prev)
+            for _ in range(10):
+                if u32.GetForegroundWindow() != gh:
+                    break
+                time.sleep(0.05)
+        u32.GetWindowRect(gh, ctypes.byref(r))
+        inside = r.left <= old.x < r.right and r.top <= old.y < r.bottom
+        stuck = u32.GetForegroundWindow() == gh and not inside
+        print(f'끝: 게임이 앞={u32.GetForegroundWindow() == gh} 마우스 원래 자리가 게임 안={inside}')
+        if not stuck:   # 게임이 앞에 남았는데 마우스만 다른 모니터로 보내면 게임이 화면을 그쪽으로 계속 민다
+            u32.SetCursorPos(old.x, old.y)
 
 
 def mine_of(g, me, sid):
@@ -1148,7 +1159,7 @@ class Clicker:
     """게임 화면에서 내 유닛을 눌러 고르고 단축키를 누른다. 누른 뒤에는 늘 게임에서 '지금 골라진 유닛'을 읽어 확인한다."""
 
     def __init__(self, g, me):
-        self.g, self.me, self.err = g, me, None
+        self.g, self.me, self.err, self.last = g, me, None, 0
         pl = g.local_player()
         self.sel = pl and self.rq(pl + OFF_SEL)
         if not self.sel or not g.sel_vt or g.read(self.sel, 8) != g.sel_vt:
@@ -1426,21 +1437,26 @@ class Clicker:
                 if not key_of(p) or not self.aim(p):
                     break
                 tried += 1
-                now = before = self.selected()
-                if not key_of(before):           # 이미 재료가 골라져 있으면 누를 필요 없다
-                    if not self.point_at(p, key_of):
-                        print(f'  마우스로 {name(p)} 를 못 찾음 -> 둘레 유닛을 옮겨 떨어뜨림 ({scattered + 1}번째)')
-                        if scattered < 2 and self.scatter(p, scattered):
-                            scattered += 1
-                            continue
-                        break
-                    time.sleep(0.08)
-                    self.press()
+                # 이미 골라져 있어도 늘 한 마리를 눌러서 고른다: 여러 마리가 함께 골라져 있으면 단축키가 전부에 들어가 여러 번 조합된다
+                if not self.point_at(p, key_of):
+                    print(f'  마우스로 {name(p)} 를 못 찾음 -> 둘레 유닛을 옮겨 떨어뜨림 ({scattered + 1}번째)')
+                    if scattered < 2 and self.scatter(p, scattered):
+                        scattered += 1
+                        continue
+                    break
+                before, under = self.selected(), self.hover()
+                time.sleep(0.08)
+                self.press()
+                if under == before:              # 골라져 있던 그 유닛을 다시 누른 것: 선택이 안 바뀌는 게 맞다
+                    time.sleep(0.2)
+                    now = self.selected()
+                else:
                     now = self.selected(before)
-                    print(f'  마우스 아래 재료 확인 누름 -> 고른 유닛 {name(now)}{" (선택 안 바뀜)" if now == before else ""}')
+                print(f'  마우스 아래 재료 확인 누름 -> 고른 유닛 {name(now)}{" (선택 안 바뀜)" if now == before and under != before else ""}')
                 key = key_of(now)                # 겹친 다른 유닛이 골라졌어도 같은 재료면 된다
                 if key and u32.GetForegroundWindow() == self.h:
                     time.sleep(0.05)
+                    self.last = now              # 단축키를 누른 재료: 조합되면 사라진다
                     tap(ord(key), u32.MapVirtualKeyW(ord(key), 0))
                     return 'ok'
                 time.sleep(0.2)                  # 재료 위에서 눌렀는데 선택이 안 바뀌었다: 한 박자 쉬고 다시
@@ -1579,8 +1595,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Private-Network', 'true')
         self.send_header('Cache-Control', 'no-store')
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.end_headers()
+            self.wfile.write(body)
+        except OSError:      # 페이지가 새로 고쳐지며 연결을 끊었다: 기록을 어지럽힐 일이 아니다
+            pass
 
     def _json(self, obj):
         self._send(200, json.dumps(obj, ensure_ascii=False).encode(), 'application/json; charset=utf-8')
