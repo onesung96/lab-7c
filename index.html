@@ -904,7 +904,9 @@ document.addEventListener('keydown', e => {
 // ───────── 시작 ─────────
 async function init() {
   if (MINI) document.body.classList.add('mini');
-  const d = await (await fetch('/data')).json();
+  let d = null;
+  try { d = await (await fetch('/data')).json(); } catch {}
+  if (!d || !d.groups) return setTimeout(init, 1000);   // 프로그램이 막 켜져서 조합 데이터를 아직 못 읽었다: 여기서 멈추면 '연결 중'에서 영영 안 넘어간다
   const rank = g => { const i = RANK.findIndex(r => g.name.startsWith(r)); return i < 0 ? RANK.length : i; };
   d.groups.sort((a, b) => rank(a) - rank(b));
   groups = d.groups.filter(g => g.items.length);
