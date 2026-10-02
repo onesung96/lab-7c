@@ -11,7 +11,7 @@
 import ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.7.3'
+VERSION = '1.7.4'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -1031,7 +1031,8 @@ def front(h):
 
 def focus_game():
     """게임 창을 앞으로 가져온다 -> 창 핸들, 안 되면 까닭(글)."""
-    pid = find_pid()
+    g = LIVE['g']
+    pid = g.pid if g and g.alive() else find_pid()   # find_pid 는 tasklist 를 돌려서 느리다(0.2~0.4초): 붙어 있는 게임이 있으면 그걸 쓴다
     h = pid and game_window(pid)
     if not h:
         return '게임 창을 못 찾았어요'
@@ -1065,6 +1066,7 @@ OFF_VP = 0x58                               # CTextTagManager: 화면 변환 행
 OFF_HOVER = 0x468                           # CWorldFrameWar3: 지금 마우스 아래에 있는 유닛
 OFF_MINIMAP, OFF_MM_RECT, OFF_MM_SCREEN, OFF_MM_WORLD = 0x2f0, 0x1e0, 0x234, 0x290   # 월드프레임 -> CMinimap: 자리(아래,왼,위,오른) / 화면 범위 / 맵 범위
 MINI_CAL = {}                               # (게임 pid, 창 크기) -> 미니맵 눈금 (px, py, X, Y, kx, ky, 맵 범위)
+HIT_AT = {}                                 # 유닛 종류 -> 지난번에 눌렸던 자리 (예측점에서 벗어난 픽셀)
 u32.WindowFromPoint.argtypes, u32.WindowFromPoint.restype = [W.POINT], W.HWND
 u32.GetAncestor.argtypes, u32.GetAncestor.restype = [W.HWND, W.UINT], W.HWND
 u32.GetClientRect.argtypes = [W.HWND, ctypes.POINTER(W.RECT)]
@@ -1099,6 +1101,7 @@ def _steps(g, steps):
         if me is None:
             return '내 플레이어를 못 찾았어요 (게임이 업데이트된 것 같아요)'
         for i, (sid, cmd) in enumerate(steps):
+            t0 = time.time()
             if u32.GetAsyncKeyState(0x1B) & 0x8000:
                 return f'Esc 로 멈췄어요 ({i}/{len(steps)}단계까지 함)'
             before = mine_of(g, me, sid)
@@ -1106,20 +1109,23 @@ def _steps(g, steps):
                 ui = Clicker(g, me)
                 cam0 = cam0 or (not ui.err and ui.cam()) or None   # 처음 보던 곳: 끝나면 돌아온다
             msg = _chat(cmd) if cmd else ui.err or ui.combine(COMBOS[sid])
-            print(f'조합 {i + 1}/{len(steps)} id={sid} {cmd or "버튼"}: {msg}')
+            t1 = time.time()
+            slow = not cmd and any(k == 'B' for _, k, *_ in COMBOS[sid])   # 변화는 시전에 10초가 걸린다
+            done = msg != 'ok'
+            for k in range(0 if done else 430 if slow else 100):   # 결과 유닛이 생기거나 누른 재료가 사라질 때까지 (최대 3초, 변화는 13초)
+                time.sleep(0.03)
+                if (not cmd and not slow and not ui.unit(ui.last)) or (k % 3 == 2 and mine_of(g, me, sid) - before):
+                    done = True
+                    break
+            print(f'조합 {i + 1}/{len(steps)} id={sid} {cmd or "버튼"}: {msg}  (고르고 누르기 {t1 - t0:.2f}초, 결과 기다림 {time.time() - t1:.2f}초)')
             if msg != 'ok':
                 return msg if len(steps) == 1 else f'{i + 1}번째 조합에서 멈췄어요: {msg}'
-            slow = not cmd and any(k == 'B' for _, k, *_ in COMBOS[sid])   # 변화는 시전에 10초가 걸린다
-            for _ in range(130 if slow else 30):   # 결과 유닛이 생기거나 누른 재료가 사라질 때까지 (최대 3초)
-                time.sleep(0.1)
-                if mine_of(g, me, sid) - before or (not cmd and not slow and not ui.unit(ui.last)):
-                    break
-            else:
+            if not done:
                 print(f'조합 {i + 1}/{len(steps)} id={sid}: 결과 유닛이 안 생김')
                 if cmd and i + 1 == len(steps):
                     return f'명령어({cmd})는 입력했는데 새 유닛이 안 보여요. 게임에서 조합됐는지 확인해 주세요'
                 return (f'{i + 1}번째 조합이 게임에서 안 됐어요. ' if len(steps) > 1 else '게임에서 조합이 안 됐어요. ') + '목재·골드·재료를 확인해 주세요'
-            time.sleep(0.15)
+            time.sleep(0.05)
         return 'ok'
     except Exception as e:
         traceback.print_exc()
@@ -1225,7 +1231,7 @@ class Clicker:
                 if held and vk != held:
                     u32.keybd_event(held, u32.MapVirtualKeyW(held, 0), 3, 0); held = None
                 if vk is None:
-                    time.sleep(0.15)                 # 화면이 멈출 때까지
+                    time.sleep(0.15 if held else 0.04)   # 방향키로 밀던 화면이 멈출 때까지
                     if want() is None:
                         return True
                     continue
@@ -1244,7 +1250,7 @@ class Clicker:
         u32.SetCursorPos(pt.x, pt.y)
         u32.mouse_event(1, 1, 0, 0, 0)
         u32.mouse_event(1, -1, 0, 0, 0)
-        time.sleep(0.1)
+        time.sleep(0.06)
         self.press()
         return True
 
@@ -1289,8 +1295,8 @@ class Clicker:
         c0 = c = self.cam()
         if not self.mini_click(px + (x - X) / kx, py + (y - Y) / ky):
             return False
-        for _ in range(8):
-            time.sleep(0.05)
+        for _ in range(20):
+            time.sleep(0.02)
             c = self.cam()
             if c and abs(c[0] - x) < 400 and abs(c[1] - y) < 400:
                 return True
@@ -1310,7 +1316,9 @@ class Clicker:
             xyz, c = self.where(p), self.cam()       # 카메라 뒤쪽이라 화면 좌표가 없다: 보는 점보다 남쪽이면 아래로
             return (0x28 if xyz[1] < c[1] else 0x26) if xyz and c else 0x28
         xyz, secs = self.where(p), 4
-        if want() is not None and xyz:
+        if want() is None:
+            return bool(self.safe(self.body(p)))       # 이미 누를 수 있는 자리에 있다
+        if xyz:
             self.jump(xyz[0], xyz[1])
             if (self.g.pid, rc.right, rc.bottom) in MINI_CAL:
                 secs = 1.5                             # 미니맵으로 옮겼으면 방향키는 마무리만: 못 가는 곳에서 오래 끌지 않는다
@@ -1368,12 +1376,16 @@ class Clicker:
         near = lambda d: d[0] ** 2 + d[1] ** 2
         pts = (sorted(((dx, dy) for dx in range(-30, 31, 6) for dy in range(-30, 31, 6) if dx * dx + dy * dy <= 900), key=near)
                + sorted(((dx, dy) for dx in range(-63, 64, 9) for dy in range(-63, 64, 9) if 900 < dx * dx + dy * dy <= 3969), key=near))
+        code = self.g.read(p + OFF_TYPE, 4)
+        if code in HIT_AT:                        # 이 종류가 지난번에 눌렸던 자리부터 본다: 대개 첫 번에 맞는다
+            pts.insert(0, HIT_AT[code])
         for dx, dy in pts:
             if self.move((s[0] + dx, s[1] + dy - 15)):
-                time.sleep(0.035)
+                time.sleep(0.025)
                 if ok(self.hover()):
-                    time.sleep(0.05)              # 한 박자 늦게 읽혔을 수 있으니 같은 자리에서 다시 확인
+                    time.sleep(0.03)              # 한 박자 늦게 읽혔을 수 있으니 같은 자리에서 다시 확인
                     if ok(self.hover()):
+                        HIT_AT[code] = (dx, dy)
                         return True
         return False
 
@@ -1381,10 +1393,10 @@ class Clicker:
         """지금 골라진 유닛. before 를 주면 선택이 그것에서 '바뀌고' 게임이 확정할 때까지 기다린다 (최대 0.8초).
         바뀌기 전에 읽으면 방금 전 유닛을 고른 줄 안다."""
         now = self.rq(self.sel + OFF_SEL_NOW)
-        for _ in range(16 if before is not None else 0):
+        for _ in range(40 if before is not None else 0):
             if now and now != before and now == self.rq(self.sel + OFF_SEL_SYNC):
                 break
-            time.sleep(0.05)
+            time.sleep(0.02)
             now = self.rq(self.sel + OFF_SEL_NOW)
         return now if now == self.rq(self.sel + OFF_SEL_SYNC) else 0
 
@@ -1425,10 +1437,14 @@ class Clicker:
         name = lambda p: (g.read(p + OFF_TYPE, 4) or b'')[::-1] if p else None
         cx, cy = self.cam() or (0, 0)
         cands = []
-        for p in g.unit_ptrs() or ():
-            xyz = key_of(p) and self.where(p)
-            if xyz:
-                cands.append(((xyz[0] - cx) ** 2 + (xyz[1] - cy) ** 2, p))
+        for _wait in range(8):                   # 앞 단계에서 막 만든 유닛이 재료일 수 있다: 아직 안 보이면 잠깐 기다린다
+            for p in g.unit_ptrs() or ():
+                xyz = key_of(p) and self.where(p)
+                if xyz:
+                    cands.append(((xyz[0] - cx) ** 2 + (xyz[1] - cy) ** 2, p))
+            if cands:
+                break
+            time.sleep(0.07)
         if not cands:
             return '조합 버튼을 가진 재료 유닛이 없어요'
         tried = scattered = 0
@@ -1445,17 +1461,16 @@ class Clicker:
                         continue
                     break
                 before, under = self.selected(), self.hover()
-                time.sleep(0.08)
-                self.press()
+                self.press()                     # 마우스 아래가 재료인 걸 두 번 확인했으니 바로 누른다
                 if under == before:              # 골라져 있던 그 유닛을 다시 누른 것: 선택이 안 바뀌는 게 맞다
-                    time.sleep(0.2)
+                    time.sleep(0.12)
                     now = self.selected()
                 else:
                     now = self.selected(before)
                 print(f'  마우스 아래 재료 확인 누름 -> 고른 유닛 {name(now)}{" (선택 안 바뀜)" if now == before and under != before else ""}')
                 key = key_of(now)                # 겹친 다른 유닛이 골라졌어도 같은 재료면 된다
                 if key and u32.GetForegroundWindow() == self.h:
-                    time.sleep(0.05)
+                    time.sleep(0.02)
                     self.last = now              # 단축키를 누른 재료: 조합되면 사라진다
                     tap(ord(key), u32.MapVirtualKeyW(ord(key), 0))
                     return 'ok'
