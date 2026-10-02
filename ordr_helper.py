@@ -11,7 +11,7 @@
 import ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.7.5'
+VERSION = '1.7.6'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -24,7 +24,10 @@ for _s in (sys.stdout, sys.stderr):
     except Exception: pass
 EXE = 'Warcraft III.exe'
 VT_RVA = 0x2792E78        # CUnit vtable (RTTI .?AVCUnit@@), Reforged 3.0.0.24268 — 못 찾을 때만 쓰는 예비값
-OFF_TYPE, OFF_OWNER, OFF_GONE = 0x70, 0x58, 0x274   # typeId, owner slot, 1 = 제거됨(조합 재료로 사라짐)
+# typeId, 주인 플레이어 번호, 1 = 제거됨(조합 재료로 사라짐).
+# 주인은 +0x1c0. +0x58 은 주인이 아니라 '색 번호'다: 혼자 하는 판에선 둘이 같지만, 여럿이 하는 판에선 맵이 색을 바꿔서
+# (2번 플레이어의 유닛이 색 3) 내 유닛이 남의 슬롯으로 잡혔다.
+OFF_TYPE, OFF_OWNER, OFF_GONE = 0x70, 0x1c0, 0x274
 SZ = 0x400             # 객체에서 읽는 길이 (패치로 필드가 밀려도 넉넉하게)
 CHUNK = 1 << 20           # ponytail: 1MB reads + 10ms nap every 16MB; tune if the game hitches
 NAP_EVERY, NAP = 16, 0.01
@@ -69,7 +72,7 @@ def apply_mapping(mp):
 
 state = {'status': '워크3 기다리는 중', 'counts': {}, 'players': {}, 'ts': 0, 'scan': 0,
          'owner': cfg['owner'], 'auto': cfg['auto'], 'managed': [], 'notice': '', 'data_ver': 1,
-         'map_version': cfg['map_version'], 'big_key': cfg.get('big_key', '`'), 'version': VERSION, 'frozen': FROZEN, 'update': None, 'startup': False}
+         'map_version': cfg['map_version'], 'big_key': cfg.get('big_key', '`'), 'big_alpha': cfg.get('big_alpha', 100), 'version': VERSION, 'frozen': FROZEN, 'update': None, 'startup': False}
 apply_mapping(json.load(open(res_or_local('mapping.json'), encoding='utf-8')))
 COMBOS = {}   # 버튼으로 조합하는 유닛: {결과 sions id: [[버튼을 가진 유닛 코드, 단축키], ...]}
 
@@ -451,7 +454,7 @@ class Game:
 
 def fix_offsets(samples):
     """유닛 객체는 많은데 아는 유닛 코드가 하나도 안 잡히면: 코드가 가장 많이 들어 있는 위치를 typeId 로 다시 잡는다.
-    주인·제거 표시 위치는 typeId 에서 같은 거리만큼 옮겨졌다고 가정한다(64비트 1.36 기준 -0x18, +0x204)."""
+    주인·제거 표시 위치는 typeId 에서 같은 거리만큼 옮겨졌다고 가정한다(주인 +0x150, 제거 표시 +0x204)."""
     global OFF_TYPE, OFF_OWNER, OFF_GONE
     best = max(range(0, SZ - 4, 4), key=lambda off: sum(o[off:off + 4] in CODES for o in samples))
     hits = sum(o[best:best + 4] in CODES for o in samples)
@@ -1087,10 +1090,15 @@ def game_steps(steps):
     if not chat_lock.acquire(blocking=False):   # 버튼을 두 번 눌렀을 때 줄 서서 또 돌면, 재료가 남아 있는 한 한 번 더 조합해 버린다
         return '이미 조합하는 중이에요'
     try:
+        if time.time() - LIVE.get('done', 0) < 0.8:   # 방금 끝났다: 페이지가 아직 예전 유닛 수로 순서를 짰을 수 있다
+            return '방금 조합이 끝났어요. 잠깐 뒤에 다시 눌러 주세요'
         g = LIVE['g']
         if not g or not g.world or not g.alive():
             return '게임 중이 아니에요'
-        return _steps(g, steps)
+        try:
+            return _steps(g, steps)
+        finally:
+            LIVE['done'] = time.time()
     finally:
         chat_lock.release()
 
@@ -1423,22 +1431,24 @@ class Clicker:
         a, b = (s[0] - 55, s[1] - 75), (s[0] + 55, s[1] + 35)
         if not self.move(a) or not self.safe(b):
             return False
-        time.sleep(0.12)
+        time.sleep(0.08)
         u32.mouse_event(2, 0, 0, 0, 0)               # 끌어서 고르기
         for k in range(1, 7):
             time.sleep(0.03)
             self.move((a[0] + (b[0] - a[0]) * k / 6, a[1] + (b[1] - a[1]) * k / 6))
-        time.sleep(0.06)
+        time.sleep(0.05)
         u32.mouse_event(4, 0, 0, 0, 0)
-        time.sleep(0.3)
+        time.sleep(0.2)
         if not self.click(self.screen((xyz[0] + (320 if n % 2 == 0 else -320), xyz[1] + 160, xyz[2])), right=True):
             return False
-        for _ in range(25):                          # 걸어갈 때까지 (최대 2.5초)
-            time.sleep(0.1)
+        last = None
+        for _ in range(50):                          # 다 걸어가서 멈출 때까지 (최대 2.5초)
+            time.sleep(0.05)
             now = self.where(p)
-            if now and (now[0] - xyz[0]) ** 2 + (now[1] - xyz[1]) ** 2 > 200 ** 2:
+            if now and (now[0] - xyz[0]) ** 2 + (now[1] - xyz[1]) ** 2 > 200 ** 2 and now == last:
                 break
-        time.sleep(0.6)                              # 뒤따라오는 유닛들이 자리를 잡을 때까지
+            last = now
+        time.sleep(0.25)                             # 뒤따라오는 유닛들이 자리를 잡을 때까지
         return True
 
     def combine(self, opts):
@@ -1564,7 +1574,7 @@ def big_show(h, on):
     -> 창은 그대로 두고 투명하게(+마우스가 통과하게)만 바꾼다. 바로 켜지고 바로 꺼진다."""
     ex = u32.GetWindowLongW(h, -20) | 0x80000                    # WS_EX_LAYERED
     u32.SetWindowLongW(h, -20, (ex & ~0x20) if on else (ex | 0x20))   # WS_EX_TRANSPARENT: 감췄을 땐 클릭이 게임으로 간다
-    u32.SetLayeredWindowAttributes(h, 0, 255 if on else 0, 2)
+    u32.SetLayeredWindowAttributes(h, 0, max(60, min(255, int(cfg.get('big_alpha', 100)) * 255 // 100)) if on else 0, 2)
     if on:
         u32.SetWindowPos(h, W.HWND(-1), 0, 0, 0, 0, 0x13)        # 항상 위, 초점은 게임에 둔다
 
@@ -1650,6 +1660,13 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 state['owner'], state['auto'] = int(q[2:]), False
             save_cfg()
+            self._send(200, b'ok', 'text/plain')
+        elif path == '/bigalpha' and q.startswith('v=') and q[2:].isdigit():   # 큰 창 투명도 (30~100 %)
+            cfg['big_alpha'] = state['big_alpha'] = max(30, min(100, int(q[2:])))
+            save_cfg()
+            h = big_window()
+            if big_shown(h):
+                big_show(h, True)
             self._send(200, b'ok', 'text/plain')
         elif path == '/bigkey' and q.startswith('k='):   # 큰 창 여닫는 키 바꾸기
             from urllib.parse import unquote

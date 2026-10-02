@@ -520,7 +520,7 @@ function render() {
   $('pins').hidden = ![...pins].some(id => items[id]);   // 찜한 게 없으면 줄 자체를 숨김
   $('pins').innerHTML = '<b>📌 찜</b> ' + [...pins].filter(id => items[id]).map(id => {
     const it = items[id], x = { it, pr: pinRes[id], ready: canCraft(it, counts) };
-    return `<span class="it" data-id="${id}">${esc(short(it.name))} <span style="color:${gcolor(it.grade)}">${esc(it.grade)}</span> · ${stateText(x)}</span>`;
+    return `<span class="it" data-id="${id}">${autoPins.has(id) ? '⚡' : ''}${esc(short(it.name))} <span style="color:${gcolor(it.grade)}">${esc(it.grade)}</span> · ${stateText(x)}</span>`;
   }).join('');
 
   // 작은 화면: 지금 바로 조합 가능한 목록
@@ -687,15 +687,33 @@ function sendPlan(id) {
   return ids.every(i => canSend(items[i])) ? ids.map(i => [i, chatCmd(items[i])]) : null;
 }
 // 이 순서를 다 하는 데 드는 [목재, 골드] (버튼 조합만: 맵에 적힌 값. 명령어 조합은 맵에 안 적혀 있어 모른다)
+function descrCost(it) {   // 명령어 조합: sions 설명에 "조합시 목재5필요", "+5목재" 처럼 적혀 있는 것만 안다
+  const d = it.descr || '', w = d.match(/목재\s*(\d+)/) || d.match(/(\d+)\s*목재/), g = d.match(/([\d,]+)\s*골드/);
+  return [w ? +w[1] : 0, g ? +g[1].replace(/,/g, '') : 0];
+}
 function planCost(plan) {
   let w = 0, g = 0;
-  for (const [i] of plan || []) { const c = (srv.costs || {})[i]; if (c) { w += c[0]; g += c[1]; } }
+  for (const [i, cmd] of plan || []) { const c = (srv.costs || {})[i] || (cmd ? descrCost(items[i]) : null); if (c) { w += c[0]; g += c[1]; } }
   return [w, g];
 }
 const costText = ([w, g]) => [w ? `목재 ${w}` : '', g ? `골드 ${g.toLocaleString()}` : ''].filter(Boolean).join(' · ');
 const lacks = ([w, g]) => srv.gold != null && (w > srv.wood || g > srv.gold);
 let sending = false;   // 조합을 보내 놓고 끝나기 전: 또 눌러도 보내지 않는다
-function sendChat(id) {
+// ⚡ 자동 조합: 찜한 유닛 중 자동을 켠 것은 재료가 다 모이면(자원도 되면) 알아서 조합한다. 한 번 실패하면 그 유닛의 자동을 끈다(되풀이 방지).
+let autoPins = new Set(store.get('autoPins', [])), autoHold = 0;
+function maybeAuto() {
+  if (MINI || sending || Date.now() < autoHold || !(srv.status || '').startsWith('연결됨')) return;
+  for (const id of autoPins) {
+    if (!pins.has(id) || !items[id]) continue;
+    const plan = sendPlan(id);
+    if (!plan || lacks(planCost(plan))) continue;
+    autoHold = Date.now() + 8000;
+    toast(`⚡ 찜한 ${nm(id)} 재료가 다 모였어요 · 2초 뒤 자동으로 조합해요 (Esc 를 누르고 있으면 취소)`, 'ok'); ding();
+    setTimeout(() => sendChat(id, true), 2000);
+    return;
+  }
+}
+function sendChat(id, auto) {
   if (sending) return toast('조합하는 중이에요. 끝나면 다시 눌러 주세요');
   const plan = sendPlan(id);
   if (!plan) return toast('지금은 게임에서 대신 조합할 수 없어요');
@@ -704,7 +722,12 @@ function sendChat(id) {
   if (plan.length > 1) toast(`게임에서 조합 중… ${plan.length}단계 · 마우스는 그대로 두세요 · 멈추려면 Esc`);
   sending = true;
   fetch('/combine', { method: 'POST', body: JSON.stringify(plan) }).then(r => r.text())
-    .then(t => toast(t === 'ok' ? `게임에서 조합했어요: ${nm(id)}` : t, t === 'ok' ? 'ok' : ''), () => toast('프로그램에 연결하지 못했어요'))
+    .then(t => { toast(t === 'ok' ? `게임에서 조합했어요: ${nm(id)}` : t, t === 'ok' ? 'ok' : '');
+      if (auto && !t.startsWith('이미 조합')) {   // 자동: 됐으면 찜을 풀고, 안 됐으면 자동만 끈다
+        autoPins.delete(id); store.set('autoPins', [...autoPins]);
+        if (t === 'ok') { pins.delete(id); store.set('pins', [...pins]); } else toast(`⚡ ${nm(id)} 자동 조합을 껐어요 (${t})`);
+        render();
+      } }, () => toast('프로그램에 연결하지 못했어요'))
     .finally(() => { sending = false; });
 }
 
@@ -730,6 +753,7 @@ function openRecipe(id, push = true) {
     (craft && it.rank >= REC_FROM && it.rank < REC_TO ? `<button class="ibtn" data-ex="${id}">${excluded.has(id) ? '추천에 다시 넣기' : '추천에서 빼기'}</button>` : '') +
     (craft && sendPlan(id) ? `<button class="ibtn" data-chat="${id}" title="게임에서 재료 유닛을 고르고 조합 단축키(또는 명령어)를 대신 눌러요">게임에서 조합${sendPlan(id).length > 1 ? ` (${sendPlan(id).length}단계)` : chatCmd(it) ? ` (${esc(chatCmd(it))})` : ''}${costText(planCost(sendPlan(id))) ? ` · <span class="${lacks(planCost(sendPlan(id))) ? 'bad' : 'dim'}">${costText(planCost(sendPlan(id)))}${lacks(planCost(sendPlan(id))) ? ' 모자람' : ''}</span>` : ''}</button>` : '') +
     (craft ? `<button class="ibtn" data-act="pin">${pinned ? '📌 찜 해제' : '📌 찜하기'}</button>` : '') +
+    (craft && pinned ? `<button class="ibtn" data-act="autopin" title="재료가 다 모이면 버튼을 안 눌러도 게임에서 조합해요. 만들고 나면 찜이 풀려요">${autoPins.has(id) ? '⚡ 자동 조합 끄기' : '⚡ 모이면 자동 조합'}</button>` : '') +
     `<span class="${n ? 'ok' : 'dim'}">보유 ${n}</span><button class="ibtn" data-act="close">✕</button></div>` +
     (it.descr ? `<div class="sec">${esc(it.descr)}</div>` : '') +
     (craft ? `<div class="sec"><h4>조합법 · 진행률 ${Math.round(pr.pct * 100)}%${ready ? ' · <span class="ok">지금 조합 가능</span>' : ''}${pinned ? ' · 📌 재료 예약 중' : ''}</h4>` +
@@ -832,7 +856,7 @@ function openSettings() {
     `<label><input type="checkbox" id="setWisp" ${selWisp ? 'checked' : ''}> 흔함선택위습을 흔함 대신 쓰는 걸로 진행률 계산</label></div>` +
     `<div class="sec"><label><input type="checkbox" id="setStartup" ${srv.startup ? 'checked' : ''}> 윈도우 켤 때 자동 실행 (창 없이 뒤에서)</label>` +
     ` <button class="ibtn" data-act="quit" style="float:right">프로그램 끄기</button>` +
-    `<div style="margin-top:6px">게임 위 큰 창 여닫는 키 <select id="setBigKey">${['`', 'F1', 'F4', 'F5', 'F7', 'Insert', '마우스 옆버튼'].map(k => `<option${k === (srv.big_key || '`') ? ' selected' : ''}>${k}</option>`).join('')}</select> <span class="dim">(\` 는 숫자 1 왼쪽 키)</span></div>` +
+    `<div style="margin-top:6px">게임 위 큰 창 여닫는 키 <select id="setBigKey">${['`', 'F1', 'F4', 'F5', 'F7', 'Insert', '마우스 옆버튼'].map(k => `<option${k === (srv.big_key || '`') ? ' selected' : ''}>${k}</option>`).join('')}</select> <span class="dim">(\` 는 숫자 1 왼쪽 키)</span> · 큰 창 진하기 <input id="setBigAlpha" type="range" min="30" max="100" step="5" value="${srv.big_alpha || 100}" style="vertical-align:middle;width:110px"> <span id="bigAlphaV">${srv.big_alpha || 100}%</span></div>` +
     `<div class="dim" style="margin-top:4px">버전 ${esc(srv.version || '')}${srv.update ? ` · <a href="${esc(srv.update.url)}" target="_blank" style="color:var(--gold)">새 버전 ${esc(srv.update.ver)} 받기</a>` : ''} · 맵 ${esc(srv.map_version || '')}</div></div>` +
     (excluded.size ? `<div class="sec"><h4>추천에서 뺀 유닛 (누르면 되돌림)</h4>${[...excluded].filter(id => items[id]).map(id => `<button class="ibtn" data-ex="${id}" style="margin:2px">${esc(nm(id))} <span class="dim">${esc(items[id].grade.split(' ')[0])}</span> ↩</button>`).join('')}</div>` : '') +
     `<div class="sec"><h4>지난 판 기록 <button class="ibtn" data-act="csv" style="float:right">엑셀(CSV)로 저장</button></h4><div id="hstat"></div><div id="hist" class="dim">불러오는 중…</div></div>` +
@@ -865,6 +889,7 @@ document.addEventListener('click', e => {
   if (act === 'back') return back();
   const chat = e.target.closest('[data-chat]'); if (chat) return sendChat(+chat.dataset.chat);
   if (act === 'pin') { const id = mstack[mstack.length - 1]; pins.has(id) ? pins.delete(id) : pins.add(id); store.set('pins', [...pins]); return render(); }
+  if (act === 'autopin') { const id = mstack[mstack.length - 1]; autoPins.has(id) ? autoPins.delete(id) : autoPins.add(id); store.set('autoPins', [...autoPins]); autoHold = Date.now() + 1500; return render(); }
   if (act === 'testSound') return ding(880, true);
   if (act === 'exportCfg') { const code = btoa(unescape(encodeURIComponent(JSON.stringify({ targets, modePref, pins: [...pins], excluded: [...excluded], hiddenGrades: [...hiddenGrades], memos }))));
     navigator.clipboard.writeText(code).then(() => toast('설정 코드를 복사했어요. 친구에게 붙여넣기 해 주세요'), () => prompt('이 코드를 복사하세요', code)); return; }
@@ -900,6 +925,7 @@ document.addEventListener('change', e => {
   if (e.target.id === 'setTone') { tone = e.target.value; store.set('tone', tone); ding(880, true); }
   if (e.target.id === 'setVol') { vol = +e.target.value; store.set('vol', vol); ding(880, true); }
   if (e.target.id === 'setOs') { osNotify = e.target.checked; store.set('osNotify', osNotify); if (osNotify && 'Notification' in window) Notification.requestPermission(); }
+  if (e.target.id === 'setBigAlpha') { $('bigAlphaV').textContent = e.target.value + '%'; srv.big_alpha = +e.target.value; fetch('/bigalpha?v=' + e.target.value); }
   if (e.target.id === 'setBigKey') fetch('/bigkey?k=' + encodeURIComponent(e.target.value)).then(() => { srv.big_key = e.target.value; toast('큰 창 여닫는 키: ' + e.target.value); });
   if (e.target.id === 'setStartup') fetch('/startup?on=' + (e.target.checked ? 1 : 0)).then(r => r.json()).then(j => { srv.startup = j.startup; toast(j.startup ? '윈도우 켤 때 자동으로 실행돼요' : '자동 실행을 껐어요'); });
   if (e.target.id === 'setAura') { auraOnce = e.target.checked; store.set('auraOnce', auraOnce); render(); }
@@ -989,6 +1015,7 @@ async function tick() {
       if (!lastKey || !Object.keys(counts).length) prevCounts = null;   // 첫 연결·새 판: 알림 폭탄 방지
       lastKey = key; counts = s.counts; render();
     }
+    maybeAuto();
   } catch { $('st').textContent = '프로그램이 꺼져 있어요'; $('st').classList.remove('on'); }
 }
 init();
