@@ -550,7 +550,7 @@ function renderGrid() {
         '\n재료\n' + it.recipes.map(([m, k]) => `${(counts[m] || 0) >= k ? '✔' : '✘'} ${nm(m)} ${Math.min(counts[m] || 0, k)}/${k}`).join('\n') +
         (Object.keys(pr.miss).length ? `\n\n부족한 재료 (최하위)\n${lackText(pr.miss)}` : '') +
         (specialLack(pr).length ? `\n\n⚠ 특수 재료 필요 (조합으로 못 만듦): ${specialLack(pr).join(', ')}` : '') : '');
-      const label = !craft ? '' : ready ? '<span class="pc full">가능</span>' : pc >= 100 ? `<span class="pc hi">${stepLabel(pr)}</span>` : `<span class="pc">${pc}%</span>`;
+      const label = !craft ? '' : ready ? (chatCmd(it) ? `<span class="pc full" data-chat="${it.id}" style="cursor:pointer;text-decoration:underline">조합⌨</span>` : '<span class="pc full">가능</span>') : pc >= 100 ? `<span class="pc hi">${stepLabel(pr)}</span>` : `<span class="pc">${pc}%</span>`;
       const memo = memos[it.id] ? `<span title="${esc(memos[it.id])}">📝</span>` : '';
       const name = memo + (query ? esc(it.name).replace(new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'), '<mark>$&</mark>') : esc(it.name));
       rows.push({ idx, sort: (pr ? pr.pct : 0) + (ready ? 1 : 0), steps: pr ? pr.steps : 0, n,
@@ -654,6 +654,20 @@ function toast(text, cls = '') {
   setTimeout(() => el.remove(), 4500);
 }
 
+// 채팅 명령어로 조합하는 유닛(히든·왜곡·초월·불멸·영원)의 명령어. sions 설명에 "봉쿠레조합, bonkurei" · "어둠의조커, joker tr" 처럼 적혀 있다.
+// 영어가 있으면 영어(한글 입력 상태와 상관없이 들어간다), 없으면 한글 이름.
+function chatCmd(it) {
+  if (!/^(히든|왜곡|초월|불멸|영원)/.test(it.grade) || !it.recipes.length) return '';
+  const d = it.descr.replace(/^\s*(일반|공성|관통|패기)\s*\/\s*/, '');
+  const m = d.match(/[A-Za-z][A-Za-z-]* (?:tr|im|et)\b/) || d.match(/조합\s*,\s*([a-z]+)/) || d.match(/\bor ([a-z]+)/) || d.match(/([a-z]{4,})\s*$/)
+    || d.match(/[가-힣]+조합/) || (!it.grade.startsWith('히든') && d.match(/^[가-힣D!]{3,}/));
+  return m ? (m[1] || m[0]).toLowerCase() : '';
+}
+function sendChat(id) {
+  const cmd = chatCmd(items[id]);
+  fetch('/chat', { method: 'POST', body: cmd }).then(r => r.text()).then(t => toast(t === 'ok' ? `게임에 입력했어요: ${cmd}` : t, t === 'ok' ? 'ok' : ''));
+}
+
 // ───────── 조합식 창 ─────────
 let mstack = [];
 function openRecipe(id, push = true) {
@@ -674,6 +688,7 @@ function openRecipe(id, push = true) {
   $('mbox').innerHTML =
     `<div class="mh">${mstack.length > 1 ? '<button class="ibtn" data-act="back">←</button>' : ''}<b>${esc(it.name)} <span style="color:${gcolor(it.grade)}">- ${esc(it.grade)}</span></b>` +
     (craft && it.rank >= REC_FROM && it.rank < REC_TO ? `<button class="ibtn" data-ex="${id}">${excluded.has(id) ? '추천에 다시 넣기' : '추천에서 빼기'}</button>` : '') +
+    (craft && chatCmd(it) ? `<button class="ibtn" data-chat="${id}" title="게임 채팅에 조합 명령어를 대신 입력해요">⌨ 게임에서 조합 (${esc(chatCmd(it))})</button>` : '') +
     (craft ? `<button class="ibtn" data-act="pin">${pinned ? '📌 찜 해제' : '📌 찜하기'}</button>` : '') +
     `<span class="${n ? 'ok' : 'dim'}">보유 ${n}</span><button class="ibtn" data-act="close">✕</button></div>` +
     (it.descr ? `<div class="sec">${esc(it.descr)}</div>` : '') +
@@ -806,6 +821,7 @@ document.addEventListener('click', e => {
   const act = e.target.closest('[data-act]')?.dataset.act;
   if (act === 'close' || e.target.classList.contains('ov')) return closeAll();
   if (act === 'back') return back();
+  const chat = e.target.closest('[data-chat]'); if (chat) return sendChat(+chat.dataset.chat);
   if (act === 'pin') { const id = mstack[mstack.length - 1]; pins.has(id) ? pins.delete(id) : pins.add(id); store.set('pins', [...pins]); return render(); }
   if (act === 'testSound') return ding(880, true);
   if (act === 'exportCfg') { const code = btoa(unescape(encodeURIComponent(JSON.stringify({ targets, modePref, pins: [...pins], excluded: [...excluded], hiddenGrades: [...hiddenGrades], memos }))));
@@ -892,7 +908,7 @@ async function init() {
   tick(); setInterval(tick, 400);
 }
 
-let lastKey = '', lastNotice = null, dataVer = 0;
+let lastKey = '', lastNotice = null, dataVer = 0, pageVer = '';
 async function tick() {
   try {
     const s = await (await fetch('/counts', { cache: 'no-store' })).json();
@@ -900,11 +916,13 @@ async function tick() {
     $('st').classList.toggle('on', s.status.startsWith('연결됨'));
     const slots = [...new Set([...Object.keys(s.players).map(Number), s.owner])].sort((a, b) => a - b);
     const opts = `<option value="auto"${s.auto ? ' selected' : ''}>자동 (${s.owner + 1}번)</option>` +
-      slots.map(k => `<option value="${k}"${!s.auto && k === s.owner ? ' selected' : ''}>${k + 1}번 ${k === 7 ? '(전시용)' : ''} ${s.players[k] || 0}마리</option>`).join('');
+      slots.map(k => `<option value="${k}"${!s.auto && k === s.owner ? ' selected' : ''}>${k + 1}번 ${k === 7 ? '(전시용)' : esc((s.names?.[k] || '').split('#')[0])} ${s.players[k] || 0}마리</option>`).join('');
     if ($('owner').innerHTML !== opts && document.activeElement !== $('owner')) $('owner').innerHTML = opts;
     if (s.notice && s.notice !== lastNotice) { if (lastNotice !== null) toast(s.notice, 'ok'); lastNotice = s.notice; }
     if (lastNotice === null) lastNotice = s.notice || '';
     if (dataVer && s.data_ver !== dataVer) return location.reload();   // 새 맵 데이터로 바뀜
+    if (pageVer && s.version !== pageVer) return location.reload();    // 프로그램이 업데이트됨: 열려 있던 페이지는 예전 계산식 그대로라 새로 읽는다
+    pageVer = s.version;
     dataVer = s.data_ver; srv = s;
     // 작은 창에 '페이지 살아 있음' 신호: 내용이 안 바뀌어도 5초마다 다시 보낸다
     if (lastSummary && Date.now() - lastPostAt > 5000) { lastPostAt = Date.now(); fetch('/summary', { method: 'POST', body: lastSummary }).catch(() => {}); }

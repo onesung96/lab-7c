@@ -11,7 +11,7 @@
 import ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.6.2'
+VERSION = '1.6.3'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -73,7 +73,7 @@ state = {'status': '워크3 기다리는 중', 'counts': {}, 'players': {}, 'ts'
 apply_mapping(json.load(open(res_or_local('mapping.json'), encoding='utf-8')))
 SIONS = b'{}'
 summary = {}           # 페이지가 계산해서 보내 주는 요약 (작은 창·판 기록용)
-game = {'start': None, 'timeline': [], 'tl_ts': 0, 'sum_ts': 0}
+game = {'start': None, 'timeline': [], 'tl_ts': 0, 'sum_ts': 0, 'names': []}   # names: [(슬롯, 이름)] 사람만 이름이 있다
 last_hot_bases = set()   # 지난 판에 유닛이 있던 메모리 구역: 다음 판 첫 스캔에서 먼저 본다
 last_world = {'base': None}   # 유닛 목록을 가진 물체가 있던 구역: 다음에 먼저 본다
 
@@ -204,6 +204,8 @@ class Game:
         self.vt = struct.pack('<Q', self.vtable_of(img, base, b'CUnit') or base + VT_RVA)
         wf = self.vtable_of(img, base, b'CWorldFrameWar3')
         self.wf_vt = struct.pack('<Q', wf) if wf else None
+        pl = self.vtable_of(img, base, b'CPlayerWar3')
+        self.pl_vt = struct.pack('<Q', pl) if pl else None
         self.world = None        # (CWorldFrameWar3 주소, 유닛 목록 {개수, 주소, 용량} 의 위치)
 
     @staticmethod
@@ -294,6 +296,27 @@ class Game:
                 found.append((struct.unpack_from('<I', o, OFF_OWNER)[0], sid))
         return found
 
+    def find_names(self):
+        """플레이어 이름 [(슬롯, 이름)]. CPlayerWar3: 슬롯 번호 +0x6a, 이름 주소 +0xa0, 길이 +0xa8 (3.0.0.24268).
+        사람 플레이어만 이름이 있다. 1MB 이하 구역만 훑어서 6초쯤 걸린다 -> 판마다 한 번만."""
+        out, naps = [], 0
+        for base, size in sorted(self.regions()):
+            if size > 1 << 20 or not self.pl_vt:
+                continue
+            d = self.read(base, size)
+            naps += 1
+            if naps % 64 == 0:
+                time.sleep(NAP)
+            i = d.find(self.pl_vt) if d else -1
+            while i >= 0:
+                if i % 8 == 0 and i + 0xb0 <= len(d):
+                    ptr, n = struct.unpack_from('<QQ', d, i + 0xa0)
+                    nm = self.read(ptr, n) if 0 < n <= 64 else None
+                    if nm and len(nm) == n and d[i + 0x6a] < 24:
+                        out.append((d[i + 0x6a], nm.decode('utf-8', 'replace')))
+                i = d.find(self.pl_vt, i + 1)
+        return out
+
     def close(self):
         k32.CloseHandle(self.h)
 
@@ -362,17 +385,44 @@ def fix_offsets(samples):
     return True
 
 
+def my_slot(cand):
+    """유닛을 가진 사람 슬롯들 중 내 슬롯. 모르면 None (마지막으로 고른 슬롯이 그대로 남는다).
+    ponytail: 게임 안의 '내 번호' 칸을 못 찾아서 이름으로 가린다. 혼자 하는 판에서 내 이름을 배우고,
+    여럿이 하는 판에선 그 이름이 붙은 슬롯을 고른다. 닉네임을 바꾸면 혼자 한 판 뒤에 다시 맞는다."""
+    names = game['names']
+    multi, me = len({n for _, n in names}) > 1, cfg.get('my_name')
+    if multi:
+        mine = [o for o in cand if (o, me) in names]
+        return mine[0] if me and len(mine) == 1 else None
+    if len(cand) != 1:
+        return None
+    if names and names[0][1] != me and (cand[0], names[0][1]) in names:   # 사람이 나뿐인 판: 이 이름이 나다
+        cfg['my_name'] = names[0][1]; save_cfg()
+    return cand[0]
+
+
+def read_names(g):
+    for _ in range(6):   # 이름이 아직 안 채워졌으면 조금 뒤 다시
+        try:
+            names = g.find_names()
+        except Exception:
+            traceback.print_exc(); return
+        if names or not g.alive():
+            game['names'] = names
+            state['names'] = {o: n for o, n in names}
+            return
+        time.sleep(20)
+
+
 def publish(found):
     counts, players = {}, {}
     for owner, sid in found:
         if sid >= 0:
             players[owner] = players.get(owner, 0) + 1
-    if state['auto']:
-        # ponytail: slot 7 = this map's showcase computer (200+ units), 24+ = neutral. One human candidate -> that's me.
-        # With 2+ humans we can't tell who is local, so the last chosen slot stays.
-        cand = [o for o, n in humans(players).items() if n < 150]
-        if len(cand) == 1 and cand[0] != state['owner']:
-            state['owner'] = cand[0]; save_cfg()
+    # ponytail: slot 7 = this map's showcase computer (200+ units), 24+ = neutral.
+    pick = my_slot([o for o, n in humans(players).items() if n < 150])
+    if state['auto'] and pick is not None and pick != state['owner']:
+        state['owner'] = pick; save_cfg()
     for owner, sid in found:
         if owner == state['owner']:
             counts[sid] = counts.get(sid, 0) + 1
@@ -421,6 +471,8 @@ def run_list_mode(g):
     """게임의 유닛 목록을 직접 읽는 방식. 목록이 없어지면(판 끝·프로세스 종료) 돌아간다."""
     state['status'] = '연결됨'
     empty_since, bad = None, 0
+    game['names'] = []
+    threading.Thread(target=read_names, args=(g,), daemon=True).start()   # 6초쯤 걸려서 추적과 따로
     while g.alive():
         t0 = time.time()
         found = g.world_units()
@@ -852,6 +904,85 @@ def self_update():
     threading.Timer(1.0, quit_app).start()
 
 
+# ───────── 게임 채팅에 조합 명령어 입력 ─────────
+class KEYBDINPUT(ctypes.Structure):
+    _fields_ = [('wVk', W.WORD), ('wScan', W.WORD), ('dwFlags', W.DWORD), ('time', W.DWORD), ('dwExtraInfo', ctypes.c_void_p)]
+
+
+class INPUT(ctypes.Structure):
+    class _U(ctypes.Union):
+        _fields_ = [('ki', KEYBDINPUT), ('pad', ctypes.c_byte * 32)]
+    _anonymous_ = ('u',)
+    _fields_ = [('type', W.DWORD), ('u', _U)]
+
+
+u32 = ctypes.WinDLL('user32', use_last_error=True)
+u32.GetForegroundWindow.restype = W.HWND
+u32.GetWindow.restype = W.HWND
+u32.GetWindow.argtypes = [W.HWND, W.UINT]
+u32.IsWindowVisible.argtypes = u32.IsIconic.argtypes = u32.SetForegroundWindow.argtypes = [W.HWND]
+u32.ShowWindow.argtypes = [W.HWND, ctypes.c_int]
+u32.GetWindowThreadProcessId.argtypes = [W.HWND, ctypes.POINTER(W.DWORD)]
+chat_lock = threading.Lock()
+
+
+def tap(vk=0, scan=0, flags=0):
+    for up in (0, 2):
+        i = INPUT(type=1, ki=KEYBDINPUT(vk, scan, flags | up, 0, None))
+        u32.SendInput(1, ctypes.byref(i), ctypes.sizeof(i))
+
+
+def game_window(pid):
+    found = []
+
+    @ctypes.WINFUNCTYPE(W.BOOL, W.HWND, W.LPARAM)
+    def each(h, _):
+        p = W.DWORD()
+        u32.GetWindowThreadProcessId(h, ctypes.byref(p))
+        if p.value == pid and u32.IsWindowVisible(h) and not u32.GetWindow(h, 4):   # 주인 없는 보이는 창 = 게임 본창
+            found.append(h)
+        return True
+    u32.EnumWindows(each, 0)
+    return found[0] if found else None
+
+
+def valid_cmd(text):
+    """조합 명령어만 허락한다: sions 설명에 실제로 적혀 있는 글자여야 한다 (아무 글이나 게임 채팅에 치게 두지 않는다)."""
+    return 2 <= len(text) <= 40 and '\n' not in text and any(
+        text.lower() in (it.get('descr') or '').lower() for g in json.loads(SIONS).get('groups', []) for it in g['items'])
+
+
+def game_chat(text):
+    """게임 창을 앞으로 가져와 Enter - 글자 - Enter. 게임 창이 앞에 있을 때만 친다 (다른 창에 치면 안 된다)."""
+    with chat_lock:
+        pid = find_pid()
+        h = pid and game_window(pid)
+        if not h:
+            return '게임 창을 못 찾았어요'
+        if u32.IsIconic(h):
+            u32.ShowWindow(h, 9)
+        if u32.GetForegroundWindow() != h:
+            u32.keybd_event(0x12, 0, 0, 0)   # Alt 를 눌렀다 떼야 윈도우가 다른 프로그램 창을 앞으로 보내 준다
+            u32.SetForegroundWindow(h)
+            u32.keybd_event(0x12, 0, 2, 0)
+        for _ in range(30):
+            if u32.GetForegroundWindow() == h:
+                break
+            time.sleep(0.05)
+        else:
+            return '게임 창을 앞으로 못 가져왔어요. 게임 화면을 한 번 누른 뒤 다시 해 주세요'
+        time.sleep(0.25)
+        tap(0x0D, 0x1C)                      # Enter: 채팅 열기
+        time.sleep(0.15)
+        for ch in text:
+            tap(0, ord(ch), 4)               # 글자를 직접 넣는다: 한/영 상태와 상관없다
+        time.sleep(0.1)
+        if u32.GetForegroundWindow() != h:
+            return '입력 도중 창이 바뀌어서 멈췄어요'
+        tap(0x0D, 0x1C)
+        return 'ok'
+
+
 def spawn_overlay():
     args = [sys.executable] + ([] if FROZEN else [os.path.abspath(__file__)]) + ['--overlay-only', f'--port={PORT}']
     subprocess.Popen(args, creationflags=0x08000000)
@@ -883,6 +1014,9 @@ class Handler(BaseHTTPRequestHandler):
                 state['auto'] = True
             else:
                 state['owner'], state['auto'] = int(q[2:]), False
+                nm = [x for o, x in game['names'] if o == state['owner']]
+                if len(nm) == 1 and not cfg.get('my_name'):   # 여럿이 하는 판에서 처음 손으로 고름 = 내 이름을 배운다
+                    cfg['my_name'] = nm[0]
             save_cfg()
             self._send(200, b'ok', 'text/plain')
         elif path == '/data':
@@ -923,6 +1057,11 @@ class Handler(BaseHTTPRequestHandler):
                                          's': {k: v for k, v, _t in summary['stats']}})
                 game['tl_ts'] = now
             self._send(200, b'ok', 'text/plain')
+        elif self.path == '/chat':   # 이 컴퓨터에서 연 우리 페이지만: 다른 사이트나 같은 공유기의 다른 기기가 게임에 글을 치게 두지 않는다
+            text = body.decode('utf-8', 'replace').strip()
+            mine = self.client_address[0] == '127.0.0.1' and self.headers.get('Origin') in (f'http://127.0.0.1:{PORT}', f'http://localhost:{PORT}')
+            msg = '이 컴퓨터에서 연 페이지에서만 돼요' if not mine else game_chat(text) if valid_cmd(text) else '조합 명령어가 아니에요'
+            self._send(200, msg.encode(), 'text/plain; charset=utf-8')
         elif self.path == '/overlay':
             spawn_overlay()
             self._send(200, b'ok', 'text/plain')
