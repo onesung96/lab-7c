@@ -462,6 +462,8 @@ def tracker():
                     state['status'] = '첫 스캔 중'
                 g.world = g.find_world()
                 if g.world:
+                    # 프로그램을 켜 둔 채로 새 맵을 받았을 수도 있다 -> 판마다 다시 확인 (추적은 안 멈추게 따로)
+                    threading.Thread(target=check_map_update, daemon=True).start()
                     run_list_mode(g)
                 else:                                   # 로비·로딩: 아직 판이 없다
                     end_game()
