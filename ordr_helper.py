@@ -11,7 +11,7 @@
 import ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.5.0'
+VERSION = '1.6.0'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -28,7 +28,8 @@ OFF_TYPE, OFF_OWNER, OFF_GONE = 0x70, 0x58, 0x274   # typeId, owner slot, 1 = �
 SZ = 0x400             # 객체에서 읽는 길이 (패치로 필드가 밀려도 넉넉하게)
 CHUNK = 1 << 20           # ponytail: 1MB reads + 10ms nap every 16MB; tune if the game hitches
 NAP_EVERY, NAP = 16, 0.01
-TICK = 0.5                # 유닛 구역(1~2MB)은 0.5초마다 다시 읽는다
+TICK = 0.5                # (예비 방식) 유닛 구역은 0.5초마다 다시 읽는다
+LIST_TICK = 0.25          # 게임의 유닛 목록을 읽는 주기
 SMALL = 1 << 20           # 유닛은 64KB~1MB 짜리 작은 구역에 생긴다
 SMALL_MB, BIG_MB = 32, 16  # 틱마다 추가로 훑는 양: 유닛 없던 작은 구역(빨리 한 바퀴) / 큰 구역(천천히)
 PIECE = 8 << 20           # 큰 구역은 이만큼씩 잘라서 훑는다
@@ -74,6 +75,7 @@ SIONS = b'{}'
 summary = {}           # 페이지가 계산해서 보내 주는 요약 (작은 창·판 기록용)
 game = {'start': None, 'timeline': [], 'tl_ts': 0, 'sum_ts': 0}
 last_hot_bases = set()   # 지난 판에 유닛이 있던 메모리 구역: 다음 판 첫 스캔에서 먼저 본다
+last_world = {'base': None}   # 유닛 목록을 가진 물체가 있던 구역: 다음에 먼저 본다
 
 
 def load_sions():
@@ -185,31 +187,112 @@ class Game:
         mods = (ctypes.c_void_p * 1)()
         need = W.DWORD()
         psapi.EnumProcessModulesEx(self.h, mods, ctypes.sizeof(mods), ctypes.byref(need), 3)
+        if not mods[0]:
+            k32.CloseHandle(self.h)
+            raise OSError('게임이 아직 켜지는 중')
         info = (ctypes.c_ulonglong * 3)()  # MODULEINFO: base, size(+pad), entry
         psapi.GetModuleInformation(W.HANDLE(self.h), ctypes.c_void_p(mods[0]), info, ctypes.sizeof(info))
         self.naps, self.objs, self.samples = 0, 0, []
-        self.vt = struct.pack('<Q', self.find_vtable(mods[0], info[1] & 0xFFFFFFFF) or mods[0] + VT_RVA)
-
-    def find_vtable(self, base, size):
-        """CUnit vtable via MSVC RTTI, so a WC3 patch doesn't break us."""
+        base, size = mods[0], info[1] & 0xFFFFFFFF
         img = bytearray()
-        for off in range(0, size, CHUNK):
-            n = min(CHUNK, size - off)
-            img += self.read(base + off, n) or bytes(n)
-            time.sleep(0.002)
-        i = img.find(b'.?AVCUnit@@\0')
+        for off in range(0, size, 0x10000):   # 64KB씩: 1MB씩 읽으면 못 읽는 페이지가 하나만 섞여도 그 1MB 가 통째로 비어 버린다
+            n = min(0x10000, size - off)
+            d = self.read(base + off, n)
+            if d is None or len(d) < n:       # 일부가 못 읽는 페이지 -> 4KB 단위로 다시
+                d = b''.join((self.read(base + off + q, min(0x1000, n - q)) or b'').ljust(min(0x1000, n - q), b'\0') for q in range(0, n, 0x1000))
+            img += d
+        self.vt = struct.pack('<Q', self.vtable_of(img, base, b'CUnit') or base + VT_RVA)
+        wf = self.vtable_of(img, base, b'CWorldFrameWar3')
+        self.wf_vt = struct.pack('<Q', wf) if wf else None
+        self.world = None        # (CWorldFrameWar3 주소, 유닛 목록 {개수, 주소, 용량} 의 위치)
+
+    @staticmethod
+    def vtable_of(img, base, name):
+        """클래스 이름 -> vtable 주소 (MSVC RTTI). 주소를 박아 두지 않아서 워크3 패치에도 다시 찾는다.
+        상속이 여러 갈래면 vtable 도 여러 개라, 물체 맨 앞에 놓이는 것(offset 0)을 고른다."""
+        i = img.find(b'.?AV' + name + b'@@\0')
         if i < 0:
             return None
-        td = struct.pack('<I', i - 0x10)
+        td, any_vt = struct.pack('<I', i - 0x10), None
         j = img.find(td)
         while j >= 0:
             col = j - 12
-            if col >= 0 and struct.unpack_from('<II', img, col)[0] == 1 and struct.unpack_from('<I', img, col + 20)[0] == col:
+            if col >= 0 and struct.unpack_from('<I', img, col)[0] == 1 and struct.unpack_from('<I', img, col + 20)[0] == col:
                 k = img.find(struct.pack('<Q', base + col))
                 if k >= 0:
-                    return base + k + 8
+                    if struct.unpack_from('<I', img, col + 4)[0] == 0:
+                        return base + k + 8
+                    any_vt = any_vt or base + k + 8
             j = img.find(td, j + 1)
+        return any_vt
+
+    def find_unit_list(self, obj):
+        """CWorldFrameWar3 안에서 {개수, 목록 주소, 용량} 을 찾는다: 목록이 가리키는 것이 거의 다 유닛이어야 한다.
+        위치(지금 버전은 +0xc08)를 박아 두지 않고 매번 찾아서 패치로 밀려도 된다."""
+        d = self.read(obj, 0x2000)
+        if not d or d[:8] != self.wf_vt:
+            return None
+        best = None
+        for off in range(8, len(d) - 24, 8):
+            cnt, ptr, cap = struct.unpack_from('<I4xQI', d, off)
+            if not (16 <= cnt <= cap <= 200000 and 0x10000 < ptr < 0x7FFFFFFFFFFF and ptr % 8 == 0):
+                continue
+            a = self.read(ptr, min(cnt, 48) * 8)
+            if not a or len(a) < 8:
+                continue
+            ps = struct.unpack(f'<{len(a) // 8}Q', a)
+            ok = sum(1 for q in ps if 0x10000 < q < 0x7FFFFFFFFFFF and self.read(q, 8) == self.vt)
+            if ok >= len(ps) * 0.8 and (best is None or cnt > best[0]):
+                best = (cnt, off)
+        return best and best[1]
+
+    def find_world(self):
+        """게임의 유닛 목록을 가진 CWorldFrameWar3 을 찾는다. 4MB 이하 구역만, 지난번에 있던 구역부터."""
+        regs = sorted((r for r in self.regions() if r[1] <= 4 << 20), key=lambda r: (r[0] != last_world['base'], r[1]))
+        total, done = sum(sz for _, sz in regs) or 1, 0
+        for base, size in regs:
+            d = self.read(base, size)
+            done += size; state['scan'] = round(done * 100 / total)
+            self.naps += 1
+            if self.naps % 64 == 0:      # 작은 구역 64개마다 잠깐 쉰다
+                time.sleep(NAP)
+            if not d:
+                continue
+            i = d.find(self.wf_vt)
+            while i >= 0:
+                if i % 8 == 0:
+                    off = self.find_unit_list(base + i)
+                    if off:
+                        last_world['base'] = base
+                        return (base + i, off)
+                i = d.find(self.wf_vt, i + 1)
         return None
+
+    def world_units(self):
+        """게임이 가진 유닛 목록을 그대로 읽는다 -> [(주인, sions id)], 목록이 사라졌으면 None.
+        메모리를 훑지 않아서 빠짐이 없고, 한 번에 수백 KB 만 읽는다."""
+        obj, off = self.world
+        d = self.read(obj, off + 24)
+        if not d or len(d) < off + 24 or d[:8] != self.wf_vt:
+            return None
+        cnt, ptr, cap = struct.unpack_from('<I4xQI', d, off)
+        if cnt > cap or cap > 200000:
+            return None
+        found, self.samples = [], []
+        if not cnt:
+            return found
+        a = self.read(ptr, cnt * 8)
+        if not a or len(a) < cnt * 8:
+            return None
+        for q in struct.unpack(f'<{cnt}Q', a):
+            o = self.read(q, SZ)
+            if not o or len(o) < SZ or o[:8] != self.vt:
+                continue
+            if len(self.samples) < 400: self.samples.append(o)
+            sid = CODES.get(o[OFF_TYPE:OFF_TYPE + 4])
+            if sid is not None and struct.unpack_from('<I', o, OFF_GONE)[0] == 0:
+                found.append((struct.unpack_from('<I', o, OFF_OWNER)[0], sid))
+        return found
 
     def close(self):
         k32.CloseHandle(self.h)
@@ -320,12 +403,46 @@ def write_diag(g, regions):
     state['notice'] = f'신고 기록을 남겼어요: {os.path.basename(path)} (Claude에게 이 파일을 알려 주세요)'
 
 
-def chunks_of(regions):
-    """구역을 1MB 조각으로. 매 틱 다시 읽는 단위는 '구역'이 아니라 '조각'이다 —
-    수백 MB 구역에 유닛이 하나 있다고 구역 전체를 매번 읽으면 한 바퀴에 수십 초가 걸린다."""
+def pieces_of(regions):
+    """구역을 '주소 기준' 1MB 격자로 자른 조각 {시작 주소: 길이}.
+    매 틱 다시 읽는 단위는 구역이 아니라 조각이다(큰 구역 전체를 매번 읽으면 한 바퀴에 수십 초).
+    주소 기준 격자라서 구역이 커지거나 옆 구역과 합쳐져도 조각 주소가 안 바뀐다."""
+    out = {}
     for base, size in regions:
-        for off in range(0, size, CHUNK):
-            yield (base + off, min(CHUNK, size - off))
+        a, end = base, base + size
+        while a < end:
+            nxt = min(end, (a // CHUNK + 1) * CHUNK)
+            out[a] = nxt - a
+            a = nxt
+    return out
+
+
+def run_list_mode(g):
+    """게임의 유닛 목록을 직접 읽는 방식. 목록이 없어지면(판 끝·프로세스 종료) 돌아간다."""
+    state['status'] = '연결됨'
+    empty_since, bad = None, 0
+    while g.alive():
+        t0 = time.time()
+        found = g.world_units()
+        if found is None:
+            return
+        if not found and len(g.samples) > 100:          # 유닛은 많은데 아는 코드가 없다 = 워크3 패치로 필드가 밀림
+            bad += 1
+            if bad > 8 and not fix_offsets(g.samples):
+                return
+        else:
+            bad = 0
+        publish(found)
+        state.update(tick_ms=round((time.time() - t0) * 1000), hot_mb=0, mode='list')
+        if not state['players']:
+            empty_since = empty_since or time.time()
+            if time.time() - empty_since > 6:
+                end_game(); state['status'] = '게임 시작 기다리는 중'
+        else:
+            empty_since, state['status'] = None, '연결됨'
+        if state.get('diag_req'):
+            write_diag(g, g.regions())
+        time.sleep(LIST_TICK if state['players'] else 1.0)
 
 
 def tracker():
@@ -336,26 +453,40 @@ def tracker():
             state.update(status='워크3 기다리는 중', counts={}, players={}); time.sleep(5); continue
         try:
             g = Game(pid)
-        except OSError as e:
-            state['status'] = f'워크3 접근 실패: {e}'; time.sleep(5); continue
+        except Exception as e:   # 어떤 이유로든 못 붙으면 잠깐 뒤 다시 (스레드가 죽으면 안 된다)
+            state['status'] = f'워크3 접근 실패: {e}'; time.sleep(3); continue
         try:
-            state['status'] = '첫 스캔 중'
+            # 1순위: 게임이 가진 유닛 목록을 찾아서 그것만 읽는다
+            while g.wf_vt and g.alive():
+                if state['status'] not in ('게임 시작 기다리는 중',):
+                    state['status'] = '첫 스캔 중'
+                g.world = g.find_world()
+                if g.world:
+                    run_list_mode(g)
+                else:                                   # 로비·로딩: 아직 판이 없다
+                    end_game()
+                    state.update(status='게임 시작 기다리는 중', counts={}, players={})
+                    time.sleep(6)
+            if not g.alive():
+                continue
+            # 예비: 클래스를 못 찾는 버전이면 메모리를 훑는 예전 방식
+            state.update(status='첫 스캔 중', mode='scan')
 
             def full_scan():
-                seen = g.regions()
+                regs = g.regions()
                 hot, found, bases = set(), [], set()
-                total, done, shown = sum(sz for _, sz in seen) or 1, 0, False
-                # 유닛은 64KB~1MB 짜리 작은 구역에 모여 있다: 지난 판 구역 -> 작은 구역 -> 큰 구역 순으로 훑고,
+                total, done, shown = sum(sz for _, sz in regs) or 1, 0, False
+                # 유닛은 작은 구역에 모여 있다: 지난 판 구역 -> 작은 구역 -> 큰 구역 순으로 훑고,
                 # 작은 구역을 다 보면 바로 화면에 보여 준다 (나머지는 뒤에서 계속)
-                for r in sorted(seen, key=lambda r: (r[0] not in last_hot_bases, r[1])):
+                for r in sorted(regs, key=lambda r: (r[0] not in last_hot_bases, r[1])):
                     if not shown and r[1] > (2 << 20) and found:
                         publish(found); state['status'], shown = '연결됨 (나머지 확인 중)', True
-                    for c in chunks_of([r]):
-                        if g.scan(*c, found):
-                            hot.add(c); bases.add(r[0])
+                    for a, n in pieces_of([r]).items():
+                        if g.scan(a, n, found):
+                            hot.add(a); bases.add(r[0])
                     done += r[1]; state['scan'] = round(done * 100 / total)
                 last_hot_bases.clear(); last_hot_bases.update(bases)   # 다음 판 첫 스캔에서 먼저 볼 구역
-                return seen, hot, found
+                return pieces_of(regs), hot, found
 
             seen, hot, found = full_scan()
             if not found and g.objs > 100 and fix_offsets(g.samples):   # 워크3 패치로 필드 위치가 바뀐 경우
@@ -371,32 +502,49 @@ def tracker():
                     end_game()
                     state['status'] = '게임 시작 기다리는 중'
                     break
-                now = g.regions()
-                for r in now - seen:
-                    if r[1] <= 4 * SMALL:   # 새로 생긴 작은 구역: 첫 유닛이 몇 틱 늦게 들어올 수 있어 한동안 지켜본다
-                        for c in chunks_of([r]):
-                            fresh[c] = 30
-                fresh = {c: n - 1 for c, n in fresh.items() if n > 0}
-                seen = now
+                regs = g.regions()
+                P = pieces_of(regs)
+                # 1) 새로 생기거나 커진 메모리: 게임이 유닛 저장 공간을 늘린 자리일 수 있다 -> 한동안 매 틱 본다.
+                #    (게임 후반에 조합한 유닛이 늦게 잡히던 원인: 늘어난 자리가 '큰 구역' 안이라 1~2분에 한 번만 봤다)
+                grown = [a for a, n in P.items() if seen.get(a) != n]
+                if len(grown) <= 256:
+                    for a in grown:
+                        fresh[a] = 30
+                else:                       # 한꺼번에 수백 MB 가 생기면 천천히 도는 쪽에 넣는다
+                    big_q.extend(grown)
+                fresh = {a: n - 1 for a, n in fresh.items() if n > 0 and a in P}
+                seen = P
                 todo = set(hot) | set(fresh)
-                # 유닛이 없던 작은 구역: 새 유닛이 여기 생기면 놓치므로 몇 초마다 한 바퀴 돈다. 큰 구역은 천천히.
+                # 2) 유닛이 있는 조각의 바로 앞·뒤 조각: 저장 공간은 이어서 늘어난다
+                ends = {a + n: a for a, n in P.items()}
+                for a in hot:
+                    if a not in P:
+                        continue
+                    nxt = a + P[a]
+                    for _ in range(2):
+                        if nxt in P:
+                            todo.add(nxt); nxt += P[nxt]
+                    if a in ends:
+                        todo.add(ends[a])
+                # 3) 나머지: 작은 구역은 빨리 한 바퀴, 큰 구역은 천천히
                 if not small_q:
-                    small_q = [c for c in chunks_of(sorted(r for r in now if r[1] <= SMALL)) if c not in hot]
+                    small_q = [a for a in pieces_of(sorted(r for r in regs if r[1] <= SMALL)) if a not in todo]
                 if not big_q:
-                    big_q = [c for c in chunks_of(sorted(r for r in now if r[1] > SMALL)) if c not in hot]
+                    big_q = [a for a in pieces_of(sorted(r for r in regs if r[1] > SMALL)) if a not in todo]
                 for q, mb in ((small_q, SMALL_MB), (big_q, BIG_MB)):
                     for _ in range(min(mb, len(q))):
                         todo.add(q.pop())
                 found, newhot = [], set()
-                for c in todo:
-                    if g.scan(*c, found):
-                        newhot.add(c)
+                for a in todo:
+                    if a in P and g.scan(a, P[a], found):
+                        newhot.add(a)
                 hot = newhot
                 publish(found)
                 state['tick_ms'] = round((time.time() - t0) * 1000)
-                state['hot_mb'] = round(sum(n for _, n in hot) / 1048576, 1)
+                state['hot_mb'] = round(sum(P.get(a, 0) for a in hot) / 1048576, 1)
+                state['read_mb'] = round(sum(P.get(a, 0) for a in todo) / 1048576)
                 if state.get('diag_req'):
-                    write_diag(g, now)
+                    write_diag(g, regs)
                 time.sleep(TICK)
         except Exception as e:
             state['status'] = f'오류: {e!r}'
