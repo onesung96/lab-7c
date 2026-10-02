@@ -8,10 +8,10 @@
 
 옵션: --lan (폰에서 보기)  --no-browser  --port=NNNN  --overlay-only (게임 위 작은 창만 띄움)
 """
-import ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
+import collections, ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.7.7'
+VERSION = '1.7.8'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -60,7 +60,7 @@ def res_or_local(name):   # 새 맵으로 다시 만든 파일이 있으면 그�
     return p if os.path.exists(p) else os.path.join(RES, name)
 
 
-MAPPING, CODES = {}, {}
+MAPPING, CODES, REV = {}, {}, {}   # REV: sions id -> [메모리에 적힌 코드]
 
 
 def apply_mapping(mp):
@@ -68,6 +68,9 @@ def apply_mapping(mp):
     MAPPING = mp
     CODES = {struct.pack('<I', int.from_bytes(c.encode(), 'big')): sid for c, sid in {**mp, **WISP_CODES}.items()}
     state['managed'] = sorted(set(mp.values()))
+    REV.clear()
+    for code, sid in CODES.items():
+        REV.setdefault(sid, []).append(code)
 
 
 state = {'status': '워크3 기다리는 중', 'counts': {}, 'players': {}, 'ts': 0, 'scan': 0,
@@ -482,6 +485,9 @@ def read_names(g):
         time.sleep(20)
 
 
+RECENT = collections.deque(maxlen=3)   # 최근 세 번 읽은 (슬롯, 유닛 수)
+
+
 def publish(found, me=None):
     """me: 게임이 알려 준 내 슬롯. 못 읽었으면(None) 예전처럼 사람 후보가 하나일 때만 그 슬롯."""
     counts, players = {}, {}
@@ -498,7 +504,13 @@ def publish(found, me=None):
             counts[sid] = counts.get(sid, 0) + 1
     if humans(players) and not game['start']:
         game['start'] = time.time()
-    state.update(counts=counts, players=players, ts=time.time())
+    # 위습이 유닛으로 바뀌는 순간 게임에 그 유닛이 0.4초쯤 둘 있다가 하나가 사라진다. 그대로 보이면 '+우솝 ×2' 로 뜨고
+    # 재료가 다 모인 것처럼 보였다가 만다 -> 늘어난 수는 0.5초(세 번 읽는 동안) 버텨야 인정한다. 줄어든 수는 바로.
+    if RECENT and RECENT[-1][0] != state['owner']:
+        RECENT.clear()
+    RECENT.append((state['owner'], counts))
+    steady = {sid: n for sid in counts for n in [min(c.get(sid, 0) for _, c in RECENT)] if n > 0}
+    state.update(counts=steady, players=players, ts=time.time())
 
 
 def write_diag(g, regions):
@@ -1120,24 +1132,29 @@ def _steps(g, steps):
             if u32.GetAsyncKeyState(0x1B) & 0x8000:
                 return f'Esc 로 멈췄어요 ({i}/{len(steps)}단계까지 함)'
             before = mine_of(g, me, sid)
-            if not cmd:
+            wisp = cmd == '@wisp'                # 흔함선택위습을 그 흔함의 자리로 보내는 단계
+            chat = bool(cmd) and not wisp
+            if not chat:
                 ui = Clicker(g, me)
                 cam0 = cam0 or (not ui.err and ui.cam()) or None   # 처음 보던 곳: 끝나면 돌아온다
-            msg = _chat(cmd) if cmd else ui.err or ui.combine(COMBOS[sid])
+            msg = _chat(cmd) if chat else ui.err or (ui.wisp(sid) if wisp else ui.combine(COMBOS[sid]))
             t1 = time.time()
             slow = not cmd and any(k == 'B' for _, k, *_ in COMBOS[sid])   # 변화는 시전에 10초가 걸린다
             done = msg != 'ok'
-            for k in range(0 if done else 430 if slow else 100):   # 결과 유닛이 생기거나 누른 재료가 사라질 때까지 (최대 3초, 변화는 13초)
+            # 결과 유닛이 생기거나 누른 재료가 사라질 때까지 (최대 3초, 변화는 13초, 위습은 걸어가야 해서 12초)
+            for k in range(0 if done else 430 if slow else 400 if wisp else 100):
                 time.sleep(0.03)
-                if (not cmd and not slow and not ui.unit(ui.last)) or (k % 3 == 2 and mine_of(g, me, sid) - before):
+                if (not chat and not slow and not ui.unit(ui.last)) or (k % 3 == 2 and mine_of(g, me, sid) - before):
                     done = True
                     break
+            if wisp and done and msg == 'ok':
+                time.sleep(0.5)                  # 위습이 바뀐 직후 0.4초쯤은 유닛이 둘로 보인다: 가라앉은 뒤 다음으로
             print(f'조합 {i + 1}/{len(steps)} id={sid} {cmd or "버튼"}: {msg}  (고르고 누르기 {t1 - t0:.2f}초, 결과 기다림 {time.time() - t1:.2f}초)')
             if msg != 'ok':
                 return msg if len(steps) == 1 else f'{i + 1}번째 조합에서 멈췄어요: {msg}'
             if not done:
                 print(f'조합 {i + 1}/{len(steps)} id={sid}: 결과 유닛이 안 생김')
-                if cmd and i + 1 == len(steps):
+                if chat and i + 1 == len(steps):
                     return f'명령어({cmd})는 입력했는데 새 유닛이 안 보여요. 게임에서 조합됐는지 확인해 주세요'
                 return (f'{i + 1}번째 조합이 게임에서 안 됐어요. ' if len(steps) > 1 else '게임에서 조합이 안 됐어요. ') + '목재·골드·재료를 확인해 주세요'
             time.sleep(0.05)
@@ -1163,6 +1180,10 @@ def _steps(g, steps):
         print(f'끝: 게임이 앞={u32.GetForegroundWindow() == gh} 마우스 원래 자리가 게임 안={inside}')
         if not stuck:   # 게임이 앞에 남았는데 마우스만 다른 모니터로 보내면 게임이 화면을 그쪽으로 계속 민다
             u32.SetCursorPos(old.x, old.y)
+
+
+def name_of(p, g):
+    return (g.read(p + OFF_TYPE, 4) or b'')[::-1]
 
 
 def mine_of(g, me, sid):
@@ -1423,6 +1444,26 @@ class Clicker:
             now = self.rq(self.sel + OFF_SEL_NOW)
         return now if now == self.rq(self.sel + OFF_SEL_SYNC) else 0
 
+    def step_aside(self, blocker, p, n):
+        """지금 골라져 있는 유닛(blocker)을 재료 유닛 p 에게서 멀리 보낸다 (오른쪽 클릭 = 이동). 보냈으면 True."""
+        a, b = self.where(blocker), self.where(p)
+        if not a or not b:
+            return False
+        dx, dy = (260, 140), (-260, 140), (260, -140), (-260, -140), (0, 300), (0, -300)
+        for k in range(6):                           # 화면 안에서 누를 수 있는 쪽을 찾는다
+            ox, oy = dx[(n + k) % 6]
+            if self.click(self.screen((b[0] + ox, b[1] + oy, b[2])), right=True):
+                break
+        else:
+            return False
+        print(f'  겹쳐 선 {name_of(blocker, self.g)} 를 옆으로 보냄')
+        for _ in range(16):                          # 비켜날 때까지 (최대 0.8초)
+            time.sleep(0.05)
+            now = self.where(blocker)
+            if now and (now[0] - b[0]) ** 2 + (now[1] - b[1]) ** 2 > 120 ** 2:
+                break
+        return True
+
     def scatter(self, p, n):
         """유닛 p 둘레에 뭉쳐 선 내 유닛들을 한꺼번에 끌어서 고른 뒤 옆으로 보낸다.
         무리로 움직이면 게임이 대형을 지어 서로 떨어뜨려 세우니, 겹쳐서 못 누르던 유닛이 따로 서게 된다."""
@@ -1452,6 +1493,44 @@ class Clicker:
         time.sleep(0.25)                             # 뒤따라오는 유닛들이 자리를 잡을 때까지
         return True
 
+    def wisp(self, sid):
+        """흔함선택위습 하나를 골라, 이 흔함의 전시 유닛(7번 플레이어)이 서 있는 자리로 보낸다. 거기 닿으면 그 흔함으로 바뀐다."""
+        g, want = self.g, set(REV.get(sid, ()))
+        wcode = struct.pack('<I', int.from_bytes(b'e018', 'big'))
+        wisps, marks = [], []
+        for p in g.unit_ptrs() or ():
+            o = g.read(p, SZ)
+            if not o or len(o) < SZ or o[:8] != g.vt or struct.unpack_from('<I', o, OFF_GONE)[0] or not self.where(p):
+                continue
+            code, own = o[OFF_TYPE:OFF_TYPE + 4], struct.unpack_from('<I', o, OFF_OWNER)[0]
+            if code == wcode and own == self.me:
+                wisps.append(p)
+            elif code in want and own == 7:      # 7번 = 이 맵의 전시용 컴퓨터
+                marks.append(p)
+        if not wisps:
+            return '흔함선택위습이 없어요'
+        if not marks:
+            return '그 흔함을 뽑는 자리를 못 찾았어요'
+        gap = lambda a, b: (self.where(a)[0] - self.where(b)[0]) ** 2 + (self.where(a)[1] - self.where(b)[1]) ** 2
+        w, m = min(((a, b) for a in wisps for b in marks), key=lambda ab: gap(*ab))
+        is_wisp = lambda p: (self.unit(p) or b'')[OFF_TYPE:OFF_TYPE + 4] == wcode
+        if not self.aim(w) or not self.point_at(w, is_wisp):
+            return '흔함선택위습을 고르지 못했어요'
+        before, under = self.selected(), self.hover()
+        self.press()
+        if under == before:
+            time.sleep(0.12)
+            now = self.selected()
+        else:
+            now = self.selected(before)
+        if not is_wisp(now):
+            return '흔함선택위습을 고르지 못했어요'
+        self.last = now                          # 보낸 위습: 유닛으로 바뀌면 사라진다
+        if not self.aim(m) or not self.click(self.screen(self.where(m)), right=True):   # 전시 유닛의 발밑으로 이동
+            return '뽑는 자리를 화면에서 누르지 못했어요'
+        print(f'  위습 -> {name_of(m, g)} 자리로 보냄')
+        return 'ok'
+
     def combine(self, opts):
         """버튼 조합 한 번: 조합 버튼을 가진 재료 유닛을 골라 단축키를 누른다.
         마우스가 그 재료 위에 올라간 것을 게임에서 읽어 확인한 뒤에 누르고, 골라진 유닛도 다시 확인한다.
@@ -1472,11 +1551,11 @@ class Clicker:
             time.sleep(0.07)
         if not cands:
             return '조합 버튼을 가진 재료 유닛이 없어요'
-        tried = scattered = 0
+        tried = scattered = moved = 0
         for _, p in sorted(cands)[:4]:           # 화면 가운데에서 가까운 것부터
             if not self.unit(p):                 # 그새 사라졌다 (판이 끝났거나 다른 조합에 쓰였다)
                 continue
-            for _again in range(5):
+            for _again in range(8):
                 if not key_of(p) or not self.aim(p):
                     break
                 tried += 1
@@ -1501,7 +1580,11 @@ class Clicker:
                     self.last = now              # 단축키를 누른 재료: 조합되면 사라진다
                     tap(ord(key), u32.MapVirtualKeyW(ord(key), 0))
                     return 'ok'
-                time.sleep(0.2)                  # 재료 위에서 눌렀는데 선택이 안 바뀌었다: 한 박자 쉬고 다시
+                # 재료 위에서 눌렀는데 겹쳐 선 다른 내 유닛이 골라졌다: 그 유닛은 지금 골라져 있으니 옆으로 보내고 다시 누른다
+                if now and now != p and self.unit(now) and moved < 6 and self.step_aside(now, p, moved):
+                    moved += 1
+                else:
+                    time.sleep(0.15)             # 선택이 안 바뀌었다: 한 박자 쉬고 다시
         if not any(self.unit(p) for p in g.unit_ptrs() or ()):
             return '내 유닛이 하나도 없어요. 판이 끝난 것 같아요'
         return ('재료 유닛을 고르지 못했어요. 유닛들을 옮겨 떨어뜨려 봤는데도 안 눌려요' if scattered
@@ -1723,7 +1806,7 @@ class Handler(BaseHTTPRequestHandler):
                 steps = [(int(i), str(c)) for i, c in json.loads(body)]
             except Exception:
                 steps = []
-            ok = 0 < len(steps) <= 60 and all(valid_cmd(c) if c else i in COMBOS for i, c in steps)
+            ok = 0 < len(steps) <= 60 and all(i in REV if c == '@wisp' else valid_cmd(c) if c else i in COMBOS for i, c in steps)
             msg = '이 컴퓨터에서 연 페이지에서만 돼요' if not mine else game_steps(steps) if ok else '게임에서 대신 조합할 수 없는 유닛이 섞여 있어요'
             self._send(200, msg.encode(), 'text/plain; charset=utf-8')
         elif self.path == '/overlay':
