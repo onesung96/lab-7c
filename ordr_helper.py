@@ -11,7 +11,7 @@
 import ctypes, ctypes.wintypes as W, json, math, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.6.7'
+VERSION = '1.6.8'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -1041,6 +1041,7 @@ OFF_SEL, OFF_SEL_NOW, OFF_SEL_SYNC = 0x168, 0x3b0, 0x348   # 플레이어 -> 선
 OFF_SPRITE, OFF_POS = 0x60, 0x170           # 유닛 -> 그리기 물체 -> 위치 (x, y, z)
 OFF_CAM, OFF_CAM_TARGET, OFF_CAM_DIST = 0x228, 0xc0, 0x108   # CWorldFrameWar3 -> CCamera -> 보는 점 / 거리
 OFF_VP = 0x58                               # CTextTagManager: 화면 변환 행렬
+OFF_HOVER = 0x468                           # CWorldFrameWar3: 지금 마우스 아래에 있는 유닛
 u32.WindowFromPoint.argtypes, u32.WindowFromPoint.restype = [W.POINT], W.HWND
 u32.GetAncestor.argtypes, u32.GetAncestor.restype = [W.HWND, W.UINT], W.HWND
 u32.GetClientRect.argtypes = [W.HWND, ctypes.POINTER(W.RECT)]
@@ -1057,6 +1058,10 @@ def game_steps(steps):
         if not g or not g.world or not g.alive():
             return '게임 중이 아니에요'
         prev, old, ui, cam0 = u32.GetForegroundWindow(), W.POINT(), None, None
+        big = big_window()
+        big = big if big and u32.IsWindowVisible(big) else None   # 큰 창이 게임 화면을 가리니 조합하는 동안 숨긴다
+        if big:
+            u32.ShowWindow(big, 0)
         u32.GetCursorPos(ctypes.byref(old))
         try:
             me = g.local_slot()
@@ -1080,8 +1085,6 @@ def game_steps(steps):
                     print(f'조합 {i + 1}/{len(steps)} id={sid}: 결과 유닛이 안 생김')
                     return (f'{i + 1}번째 조합이 게임에서 안 됐어요. ' if len(steps) > 1 else '게임에서 조합이 안 됐어요. ') + '목재·골드·재료를 확인해 주세요'
                 time.sleep(0.15)
-                if not cmd and i + 1 < len(steps):   # 다음 조합의 재료다: 다른 유닛과 겹쳐 서지 않게 옆으로 옮겨 둔다
-                    ui.spread(made.pop(), i)
             return 'ok'
         except Exception as e:
             traceback.print_exc()
@@ -1089,6 +1092,9 @@ def game_steps(steps):
         finally:   # 화면을 처음 보던 곳으로 -> 원래 창(페이지)으로 -> 마우스 제자리. 창보다 마우스를 먼저 돌리면 게임이 화면을 밀어 버린다
             if cam0 and ui and not ui.err:
                 ui.back(cam0)
+            if big:
+                u32.ShowWindow(big, 4)
+                u32.SetWindowPos(big, W.HWND(-1), 0, 0, 0, 0, 0x13)
             gh, r = game_window(g.pid), W.RECT()
             if prev and prev != gh and prev != u32.GetForegroundWindow():
                 front(prev)
@@ -1219,8 +1225,8 @@ class Clicker:
             return 0x26 if dy > 150 else 0x28 if dy < -150 else 0x27 if dx > 150 else 0x25 if dx < -150 else None
         self.steer(want, 3)
 
-    def click(self, s, right=False):
-        """화면 좌표를 누른다. 조작판 위·다른 창에 가려진 곳·게임이 앞에 없을 때는 누르지 않는다."""
+    def move(self, s):
+        """마우스를 화면 좌표로 옮긴다. 조작판·점수판 쪽, 다른 창에 가려진 곳, 게임이 앞에 없을 때는 안 옮긴다(False)."""
         if not self.safe(s):
             return False
         pt = W.POINT(int(s[0]), int(s[1]))
@@ -1228,14 +1234,44 @@ class Clicker:
         if u32.GetAncestor(u32.WindowFromPoint(pt), 2) != self.h or u32.GetForegroundWindow() != self.h:
             return False
         u32.SetCursorPos(pt.x, pt.y)
-        time.sleep(0.05)
         u32.mouse_event(1, 1, 0, 0, 0)    # 1픽셀 흔들기: 게임이 '마우스가 움직였다'는 신호를 받아야 커서 위치를 새로 잡는다
         u32.mouse_event(1, -1, 0, 0, 0)
-        time.sleep(0.12)
+        return True
+
+    def press(self, right=False):
         u32.mouse_event(8 if right else 2, 0, 0, 0, 0)
         time.sleep(0.04)
         u32.mouse_event(0x10 if right else 4, 0, 0, 0, 0)
+
+    def click(self, s, right=False):
+        if not self.move(s):
+            return False
+        time.sleep(0.15)
+        self.press(right)
         return True
+
+    def hover(self):
+        """지금 마우스 아래에 있는 유닛 (게임이 적어 둔 것)."""
+        return self.rq(self.g.world[0] + OFF_HOVER)
+
+    def point_at(self, p, ok):
+        """마우스를 유닛 p 둘레에서 조금씩 옮기며, 게임이 '마우스 아래 유닛'을 ok 인 유닛이라고 할 때까지 찾는다.
+        찾으면 True (마우스는 그 자리에 있다). 유닛마다 눌리는 범위가 달라서(나미는 15픽셀 남짓) 좌표만 믿고 누르면 빗나간다."""
+        s = self.body(p)
+        if not s:
+            return False
+        # 눌리는 자리는 보통 발끝보다 15픽셀쯤 위. 거기서부터 촘촘히(6픽셀), 바깥은 성기게(9픽셀) 60픽셀까지 넓혀 간다.
+        near = lambda d: d[0] ** 2 + d[1] ** 2
+        pts = (sorted(((dx, dy) for dx in range(-30, 31, 6) for dy in range(-30, 31, 6) if dx * dx + dy * dy <= 900), key=near)
+               + sorted(((dx, dy) for dx in range(-63, 64, 9) for dy in range(-63, 64, 9) if 900 < dx * dx + dy * dy <= 3969), key=near))
+        for dx, dy in pts:
+            if self.move((s[0] + dx, s[1] + dy - 15)):
+                time.sleep(0.035)
+                if ok(self.hover()):
+                    time.sleep(0.05)              # 한 박자 늦게 읽혔을 수 있으니 같은 자리에서 다시 확인
+                    if ok(self.hover()):
+                        return True
+        return False
 
     def selected(self, before=None):
         """지금 골라진 유닛. before 를 주면 선택이 그것에서 '바뀌고' 게임이 확정할 때까지 기다린다 (최대 0.8초).
@@ -1262,19 +1298,13 @@ class Clicker:
                     break
             time.sleep(0.15)
 
-    def spread(self, p, n):
-        """방금 만든 유닛을 다른 유닛과 겹치지 않게 옮겨 둔다. 게임이 새 유닛을 골라 줬을 때만 (아니면 다음 조합 때 눌러서 찾는다)."""
-        auto = self.selected() == p
-        print(f'  새 유닛 {"자동 선택됨 -> 옆으로 옮김" if auto else "자동 선택 안 됨"}')
-        if auto:
-            self.step_aside(p, n)
-
     def combine(self, opts):
         """버튼 조합 한 번: 조합 버튼을 가진 재료 유닛을 골라 단축키를 누른다.
-        다른 내 유닛이 겹쳐 서서 대신 골라지면 그 유닛을 옆으로 비켜 세우고 다시 누른다."""
+        마우스가 그 재료 위에 올라간 것을 게임에서 읽어 확인한 뒤에 누르고, 골라진 유닛도 다시 확인한다."""
         g = self.g
         keys = {struct.pack('<I', int.from_bytes(c.encode(), 'big')): k for c, k in opts}
         key_of = lambda p: keys.get((self.unit(p) or b'')[OFF_TYPE:OFF_TYPE + 4])
+        name = lambda p: (g.read(p + OFF_TYPE, 4) or b'')[::-1] if p else None
         cx, cy = self.cam() or (0, 0)
         cands = []
         for p in g.unit_ptrs() or ():
@@ -1285,30 +1315,29 @@ class Clicker:
             return '조합 버튼을 가진 재료 유닛이 없어요'
         tried = moved = 0
         for _, p in sorted(cands)[:4]:           # 화면 가운데에서 가까운 것부터
-            if not key_of(p) or not self.aim(p):
-                continue
-            for dx, dy in ((0, 0), (0, -24), (0, 0), (0, -48), (-18, -12), (18, -12), (0, 0)):   # 몸통 여러 군데
-                s, before = self.body(p), self.selected()
-                if not s:
+            for _again in range(3):
+                if not key_of(p) or not self.aim(p):
                     break
-                if before != p:
-                    if not self.click((s[0] + dx, s[1] + dy)):
-                        break
-                    now = self.selected(before)
-                else:
-                    now = p
                 tried += 1
-                key = key_of(now)                # 다른 유닛이 골라졌어도 같은 재료면 된다
-                print(f'  누름 ({s[0] + dx:.0f},{s[1] + dy:.0f}) 고른 유닛 {(g.read(now + OFF_TYPE, 4) or b"")[::-1] if now else None}'
-                      f'{" (선택 안 바뀜)" if now == before and now != p else ""} 단축키 {key}')
+                now = before = self.selected()
+                if not key_of(before):           # 이미 재료가 골라져 있으면 누를 필요 없다
+                    found = self.point_at(p, key_of)
+                    if not found and not self.move((self.body(p)[0], self.body(p)[1] - 15)):
+                        break
+                    time.sleep(0.08)
+                    self.press()
+                    now = self.selected(before)
+                    print(f'  {"마우스 아래 재료 확인" if found else "못 찾아서 그냥"} 누름 -> 고른 유닛 {name(now)}{" (선택 안 바뀜)" if now == before else ""}')
+                key = key_of(now)                # 겹친 다른 유닛이 골라졌어도 같은 재료면 된다
                 if key and u32.GetForegroundWindow() == self.h:
                     time.sleep(0.05)
                     tap(ord(key), u32.MapVirtualKeyW(ord(key), 0))
                     return 'ok'
-                a, b = self.where(now) if now and self.unit(now) else None, self.where(p)
-                if a and b and moved < 4 and (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 < 80 ** 2:   # 겹쳐 선 내 유닛이 가로막았다
-                    self.step_aside(now, moved, far=110)
-                    moved += 1
+                a, b = self.where(now) if now and now != before and self.unit(now) else None, self.where(p)
+                if not (a and b and moved < 4 and (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 < 80 ** 2):
+                    break
+                self.step_aside(now, moved, far=110)   # 겹쳐 선 내 유닛이 가로막았다: 비켜 세우고 다시
+                moved += 1
         return ('재료 유닛을 고르지 못했어요. 다른 유닛에 가려져 있으면 조금 떼어 놓고 다시 눌러 주세요' if tried
                 else '재료 유닛을 화면에 못 잡았어요. 창고에 있으면 꺼내 주세요')
 
@@ -1327,6 +1356,84 @@ def _chat(text):
         return '입력 도중 창이 바뀌어서 멈췄어요'
     tap(0x0D, 0x1C)
     return 'ok'
+
+
+# ───────── 게임 위 큰 창 (F1): 도우미 페이지를 그대로 게임 위에 띄운다 ─────────
+BIG_TITLE = '원랜디 도우미 · 게임 위'   # 페이지가 ?ov 로 열리면 이 제목을 단다 -> 창을 제목으로 찾는다
+u32.SetWindowPos.argtypes = [W.HWND, W.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, W.UINT]
+
+
+def browser_exe():
+    """페이지를 앱 창으로 띄울 브라우저. 기본 브라우저가 크롬 계열이면 그걸 쓴다(찜·설정이 평소 페이지와 같다), 아니면 엣지."""
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r'Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice') as k:
+            prog = winreg.QueryValueEx(k, 'ProgId')[0]
+        cmd = winreg.QueryValue(winreg.HKEY_CLASSES_ROOT, prog + r'\shell\open\command')
+        exe = cmd.split('"')[1] if cmd.startswith('"') else cmd.split(' ')[0]
+        if os.path.basename(exe).lower() in ('chrome.exe', 'msedge.exe', 'brave.exe', 'whale.exe') and os.path.exists(exe):
+            return exe
+    except OSError:
+        pass
+    return next((p for p in (r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',
+                             r'C:\Program Files\Microsoft\Edge\Application\msedge.exe') if os.path.exists(p)), None)
+
+
+def big_window():
+    found = []
+
+    @ctypes.WINFUNCTYPE(W.BOOL, W.HWND, W.LPARAM)
+    def each(h, _):
+        buf = ctypes.create_unicode_buffer(64)
+        u32.GetWindowTextW(h, buf, 64)
+        if buf.value == BIG_TITLE:
+            found.append(h)
+        return True
+    u32.EnumWindows(each, 0)
+    return found[0] if found else None
+
+
+def toggle_big():
+    """큰 창을 열거나(처음) 숨기거나 다시 보인다. 숨길 때는 게임 창으로 돌아간다."""
+    h = big_window()
+    if h and u32.IsWindowVisible(h):
+        u32.ShowWindow(h, 0)
+        pid = find_pid()
+        gh = pid and game_window(pid)
+        if gh:
+            front(gh)
+        return
+    if not h:
+        exe = browser_exe()
+        if not exe:
+            state['notice'] = '크롬이나 엣지를 못 찾아서 큰 창을 띄울 수 없어요'
+            return
+        subprocess.Popen([exe, f'--app=http://127.0.0.1:{PORT}/?ov', '--window-size=1400,800', '--window-position=60,60'])
+        for _ in range(60):
+            time.sleep(0.1)
+            h = big_window()
+            if h:
+                break
+    if h:
+        u32.ShowWindow(h, 4)                              # 보이되 게임에서 초점을 뺏지 않는다
+        u32.SetWindowPos(h, W.HWND(-1), 0, 0, 0, 0, 0x13)   # 항상 위
+
+
+def hotkey_loop():
+    """F1: 게임이나 큰 창이 앞에 있을 때만 큰 창을 여닫는다 (키 상태만 본다, 키보드 후킹 아님)."""
+    was = False
+    while True:
+        down = bool(u32.GetAsyncKeyState(0x70) & 0x8000)
+        if down and not was:
+            buf = ctypes.create_unicode_buffer(64)
+            u32.GetWindowTextW(u32.GetForegroundWindow(), buf, 64)
+            if buf.value in ('Warcraft III', BIG_TITLE):
+                try:
+                    toggle_big()
+                except Exception:
+                    traceback.print_exc()
+        was = down
+        time.sleep(0.03)
 
 
 def spawn_overlay():
@@ -1455,6 +1562,7 @@ if __name__ == '__main__':
                          lambda: f"원랜디 도우미 {VERSION} · {state['status']}" + (f" · 내 유닛 {units()}" if state['players'] else ''),
                          [('도우미 페이지 열기', open_page),
                           ('게임 위에 띄우기', spawn_overlay),
+                          ('게임 위 큰 창 (F1)', toggle_big),
                           ('업데이트 확인', tray_update),
                           ('-', None),
                           (lambda: f"{state['status']}" + (f" · {state['owner'] + 1}번 슬롯 · 유닛 {units()}" if state['players'] else ''), None),
@@ -1467,6 +1575,7 @@ if __name__ == '__main__':
     threading.Thread(target=check_update, daemon=True).start()
     state['startup'] = os.path.exists(STARTUP)
     threading.Thread(target=tracker, daemon=True).start()
+    threading.Thread(target=hotkey_loop, daemon=True).start()
     print(f'원랜디 자동 카운터 실행 중 - 브라우저에서 http://127.0.0.1:{PORT} 열기  (끄려면 트레이 아이콘 → 프로그램 종료)')
     if lan:
         import socket

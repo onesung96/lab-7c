@@ -153,6 +153,9 @@ const GCOLOR = { 흔함: '#4fd65a', 안흔함: '#a47ef2', 특별함: '#3f94ff', 
   제한됨: '#df9d30', 불멸의: '#e0525a', 영원함: '#c15af4', 신비함: '#51ddf5', 왜곡: '#9fefd1', 변화: '#ff7039', 세라핌: '#00ced1', 랜덤유닛: '#51ddf5' };
 const THUMB = 'https://sions.kr/data/file/mk_helper_thumb/';
 const MINI = new URLSearchParams(location.search).has('mini');
+const OV = new URLSearchParams(location.search).has('ov');   // 게임 위 큰 창(F1)으로 열린 페이지
+if (OV) document.title = '원랜디 도우미 · 게임 위';            // 프로그램이 이 제목으로 창을 찾는다
+addEventListener('keydown', e => { if (e.key === 'F1') e.preventDefault(); });   // F1 은 큰 창 여닫기: 브라우저 도움말이 뜨지 않게
 const REC_FROM = RANK.indexOf('전설'), REC_TO = RANK.indexOf('랜덤유닛');   // 추천은 전설·히든 ~ 세라핌만
 
 const $ = id => document.getElementById(id);
@@ -631,7 +634,7 @@ function notifyChanges() {
   prevCounts = { ...counts }; prevReady = ready; prevBoss = boss;
 }
 function ding(freq = 880, force) {   // 짧은 알림음 (브라우저가 페이지를 한 번 클릭한 뒤부터 소리를 허용해요)
-  if (!sound && !force) return;
+  if ((!sound && !force) || OV) return;   // 큰 창은 소리를 안 낸다 (평소 페이지와 겹쳐 두 번 울린다)
   try {
     const a = ding.ctx ||= new AudioContext(), v = vol / 100 * 0.3;
     const beep = (f, at, len, f2) => { const o = a.createOscillator(), g = a.createGain(); o.frequency.setValueAtTime(f, a.currentTime + at);
