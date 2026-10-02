@@ -8,10 +8,10 @@
 
 옵션: --lan (폰에서 보기)  --no-browser  --port=NNNN  --overlay-only (게임 위 작은 창만 띄움)
 """
-import ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
+import ctypes, ctypes.wintypes as W, json, math, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.6.5'
+VERSION = '1.6.6'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -1055,148 +1055,247 @@ def game_steps(steps):
         g = LIVE['g']
         if not g or not g.world or not g.alive():
             return '게임 중이 아니에요'
-        prev, old = u32.GetForegroundWindow(), W.POINT()
+        prev, old, ui, cam0 = u32.GetForegroundWindow(), W.POINT(), None, None
         u32.GetCursorPos(ctypes.byref(old))
         try:
             me = g.local_slot()
             if me is None:
                 return '내 플레이어를 못 찾았어요 (게임이 업데이트된 것 같아요)'
             for i, (sid, cmd) in enumerate(steps):
-                before = count_mine(g, me, sid)
-                msg = _chat(cmd) if cmd else _combine(g, COMBOS[sid], me)
+                before = mine_of(g, me, sid)
+                if not cmd:
+                    ui = Clicker(g, me)
+                    cam0 = cam0 or (not ui.err and ui.cam()) or None   # 처음 보던 곳: 끝나면 돌아온다
+                msg = _chat(cmd) if cmd else ui.err or ui.combine(COMBOS[sid])
                 print(f'조합 {i + 1}/{len(steps)} id={sid} {cmd or "버튼"}: {msg}')
                 if msg != 'ok':
                     return msg if len(steps) == 1 else f'{i + 1}번째 조합에서 멈췄어요: {msg}'
                 for _ in range(30):          # 결과 유닛이 생길 때까지 (최대 3초)
                     time.sleep(0.1)
-                    if count_mine(g, me, sid) > before:
+                    made = mine_of(g, me, sid) - before
+                    if made:
                         break
                 else:
                     print(f'조합 {i + 1}/{len(steps)} id={sid}: 결과 유닛이 안 생김')
                     return (f'{i + 1}번째 조합이 게임에서 안 됐어요. ' if len(steps) > 1 else '게임에서 조합이 안 됐어요. ') + '목재·골드·재료를 확인해 주세요'
                 time.sleep(0.15)
+                if not cmd and i + 1 < len(steps):   # 다음 조합의 재료다: 다른 유닛과 겹쳐 서지 않게 옆으로 옮겨 둔다
+                    ui.spread(made.pop(), i)
             return 'ok'
         except Exception as e:
             traceback.print_exc()
             return f'조합하지 못했어요: {e}'
-        finally:   # 원래 보던 창(페이지)으로 먼저 돌아간 다음 마우스를 제자리에: 순서가 반대면 게임이 화면을 밀어 버린다
+        finally:   # 화면을 처음 보던 곳으로 -> 원래 창(페이지)으로 -> 마우스 제자리. 창보다 마우스를 먼저 돌리면 게임이 화면을 밀어 버린다
+            if cam0 and ui and not ui.err:
+                ui.back(cam0)
             if prev and prev != u32.GetForegroundWindow():
                 front(prev)
                 time.sleep(0.1)
             u32.SetCursorPos(old.x, old.y)
 
 
-def count_mine(g, me, sid):
-    n = 0
+def mine_of(g, me, sid):
+    """내 유닛 중 이 sions id 인 것들의 주소."""
+    out = set()
     for p in g.unit_ptrs() or ():
         o = g.read(p, SZ)
         if (o and len(o) == SZ and o[:8] == g.vt and CODES.get(o[OFF_TYPE:OFF_TYPE + 4]) == sid
                 and struct.unpack_from('<I', o, OFF_OWNER)[0] == me and struct.unpack_from('<I', o, OFF_GONE)[0] == 0):
-            n += 1
-    return n
+            out.add(p)
+    return out
 
 
-def _combine(g, opts, me):
-    """버튼 조합 한 번: 재료 유닛을 화면에서 눌러 고르고, 고른 유닛이 그 재료가 맞는지 게임에서 읽어 확인한 뒤 단축키를 누른다.
-    유닛이 화면 밖이면 방향키로 화면을 옮긴다."""
-    rq = lambda a: struct.unpack('<Q', g.read(a, 8) or bytes(8))[0]
-    pl = g.local_player()
-    sel = pl and rq(pl + OFF_SEL)
-    if not sel or not g.sel_vt or g.read(sel, 8) != g.sel_vt:
-        return '선택 정보를 못 찾았어요 (게임이 업데이트된 것 같아요)'
-    if not g.view_matrix():
-        return '화면 정보를 아직 못 찾았어요. 몇 초 뒤 다시 눌러 주세요'
-    keys = {struct.pack('<I', int.from_bytes(c.encode(), 'big')): k for c, k in opts}
+class Clicker:
+    """게임 화면에서 내 유닛을 눌러 고르고 단축키를 누른다. 누른 뒤에는 늘 게임에서 '지금 골라진 유닛'을 읽어 확인한다."""
 
-    def material(p):   # 이 유닛이 내 재료 유닛이면 (단축키, 유닛 내용)
-        o = g.read(p, SZ) if p else None
-        ok = o and len(o) == SZ and o[:8] == g.vt and struct.unpack_from('<I', o, OFF_OWNER)[0] == me and struct.unpack_from('<I', o, OFF_GONE)[0] == 0
-        return (keys.get(o[OFF_TYPE:OFF_TYPE + 4]), o) if ok else (None, None)
+    def __init__(self, g, me):
+        self.g, self.me, self.err = g, me, None
+        pl = g.local_player()
+        self.sel = pl and self.rq(pl + OFF_SEL)
+        if not self.sel or not g.sel_vt or g.read(self.sel, 8) != g.sel_vt:
+            self.err = '선택 정보를 못 찾았어요 (게임이 업데이트된 것 같아요)'
+        elif not g.view_matrix():
+            self.err = '화면 정보를 아직 못 찾았어요. 몇 초 뒤 다시 눌러 주세요'
+        else:
+            h = focus_game()
+            if isinstance(h, str):
+                self.err = h
+            else:
+                self.h, self.rc = h, W.RECT()
+                u32.GetClientRect(h, ctypes.byref(self.rc))
 
-    def where(o):      # 유닛의 월드 좌표
-        pos = g.read(struct.unpack_from('<Q', o, OFF_SPRITE)[0] + OFF_POS, 12)
+    def rq(self, a):
+        return struct.unpack('<Q', self.g.read(a, 8) or bytes(8))[0]
+
+    def unit(self, p):
+        """내 살아 있는 유닛이면 그 내용, 아니면 None."""
+        o = self.g.read(p, SZ) if p else None
+        ok = (o and len(o) == SZ and o[:8] == self.g.vt and struct.unpack_from('<I', o, OFF_OWNER)[0] == self.me
+              and struct.unpack_from('<I', o, OFF_GONE)[0] == 0)
+        return o if ok else None
+
+    def where(self, p):
+        """유닛의 월드 좌표 (x, y, z)."""
+        o = self.g.read(p + OFF_SPRITE, 8)
+        pos = o and self.g.read(struct.unpack('<Q', o)[0] + OFF_POS, 12)
         return struct.unpack('<3f', pos) if pos and len(pos) == 12 else None
 
-    h = focus_game()
-    if isinstance(h, str):
-        return h
-    rc = W.RECT()
-    u32.GetClientRect(h, ctypes.byref(rc))
-
-    def screen(o):     # 유닛의 화면 좌표 (창 안쪽 기준), 못 구하면 None
-        M, xyz = g.view_matrix(), where(o)
+    def screen(self, xyz):
+        """월드 좌표 -> 게임 창 안쪽 화면 좌표."""
+        M = self.g.view_matrix()
         if not M or not xyz:
             return None
-        x, y, z = xyz[0], xyz[1], xyz[2] + 25      # 발끝보다 조금 위
+        x, y, z = xyz
         w = x * M[3] + y * M[7] + z * M[11] + M[15]
         if w <= 1:
             return None
-        return (((x * M[0] + y * M[4] + z * M[8] + M[12]) / w * 0.5 + 0.5) * rc.right,
-                (0.5 - (x * M[1] + y * M[5] + z * M[9] + M[13]) / w * 0.5) * rc.bottom)
+        return (((x * M[0] + y * M[4] + z * M[8] + M[12]) / w * 0.5 + 0.5) * self.rc.right,
+                (0.5 - (x * M[1] + y * M[5] + z * M[9] + M[13]) / w * 0.5) * self.rc.bottom)
 
-    def aim(o):        # 유닛이 화면 가운데쯤 오게 방향키로 화면을 옮긴다 -> 화면 좌표 (최대 4초)
-        held, end = None, time.time() + 4
+    def body(self, p):
+        xyz = self.where(p)
+        return xyz and self.screen((xyz[0], xyz[1], xyz[2] + 25))   # 발끝보다 조금 위
+
+    def safe(self, s):
+        return s and self.rc.right * 0.03 < s[0] < self.rc.right * 0.97 and self.rc.bottom * 0.06 < s[1] < self.rc.bottom * 0.72
+
+    def cam(self):
+        """카메라가 보는 점 (x, y)."""
+        c = self.g.read(self.rq(self.g.world[0] + OFF_CAM) + OFF_CAM_TARGET, 8)
+        return struct.unpack('<2f', c) if c and len(c) == 8 else None
+
+    def steer(self, want, secs):
+        """want() 가 알려 주는 방향키를 누르고 있는다. None 을 돌려주면 다 온 것(True). 시간이 다 되거나 게임이 뒤로 가면 False."""
+        held, end = None, time.time() + secs
         try:
-            while time.time() < end and u32.GetForegroundWindow() == h:
-                s = screen(o)
-                if s:
-                    want = (0x28 if s[1] > rc.bottom * 0.62 else 0x26 if s[1] < rc.bottom * 0.12 else
-                            0x27 if s[0] > rc.right * 0.90 else 0x25 if s[0] < rc.right * 0.10 else None)
-                    if held and want != held:
-                        u32.keybd_event(held, u32.MapVirtualKeyW(held, 0), 3, 0); held = None
-                    if not want:
-                        time.sleep(0.15)             # 화면이 멈출 때까지
-                        s = screen(o)
-                        if s and rc.right * 0.03 < s[0] < rc.right * 0.97 and rc.bottom * 0.06 < s[1] < rc.bottom * 0.72:
-                            return s
-                        continue
-                    u32.keybd_event(want, u32.MapVirtualKeyW(want, 0), 1, 0); held = want   # 누르고 있는 동안 계속 보낸다 (키 반복)
+            while time.time() < end and u32.GetForegroundWindow() == self.h:
+                vk = want()
+                if held and vk != held:
+                    u32.keybd_event(held, u32.MapVirtualKeyW(held, 0), 3, 0); held = None
+                if vk is None:
+                    time.sleep(0.15)                 # 화면이 멈출 때까지
+                    if want() is None:
+                        return True
+                    continue
+                u32.keybd_event(vk, u32.MapVirtualKeyW(vk, 0), 1, 0); held = vk   # 누르고 있는 동안 계속 보낸다 (키 반복)
                 time.sleep(0.03)
         finally:
             if held:
                 u32.keybd_event(held, u32.MapVirtualKeyW(held, 0), 3, 0)
-        return None
+        return False
 
-    cam = g.read(rq(g.world[0] + OFF_CAM) + OFF_CAM_TARGET, 8)
-    cx, cy = struct.unpack('<2f', cam) if cam and len(cam) == 8 else (0, 0)
-    cands = []
-    for p in g.unit_ptrs() or ():
-        key, o = material(p)
-        xyz = key and where(o)
-        if xyz:
-            cands.append(((xyz[0] - cx) ** 2 + (xyz[1] - cy) ** 2, p))
-    if not cands:
-        return '조합 버튼을 가진 재료 유닛이 없어요'
-    tried = 0
-    for _, p in sorted(cands)[:5]:           # 화면 가운데에서 가까운 것부터
-        key, o = material(p)
-        s = key and aim(o)
-        if not s:
-            continue
+    def aim(self, p):
+        """유닛이 화면 가운데쯤 오게 방향키로 화면을 옮긴다 (최대 4초). 화면에 들어왔으면 True."""
+        rc = self.rc
+
+        def want():
+            s = self.body(p)
+            if s:
+                return (0x28 if s[1] > rc.bottom * 0.66 else 0x26 if s[1] < rc.bottom * 0.10 else
+                        0x27 if s[0] > rc.right * 0.93 else 0x25 if s[0] < rc.right * 0.07 else None)
+            xyz, c = self.where(p), self.cam()       # 카메라 뒤쪽이라 화면 좌표가 없다: 보는 점보다 남쪽이면 아래로
+            return (0x28 if xyz[1] < c[1] else 0x26) if xyz and c else 0x28
+        return self.steer(want, 4) and bool(self.safe(self.body(p)))
+
+    def back(self, to):
+        """화면을 처음 보던 곳으로 되돌린다 (방향키, 최대 3초). 카메라가 북쪽을 위로 본다고 가정한다(기본값)."""
+        def want():
+            c = self.cam()
+            if not c:
+                return None
+            dx, dy = to[0] - c[0], to[1] - c[1]
+            return 0x26 if dy > 150 else 0x28 if dy < -150 else 0x27 if dx > 150 else 0x25 if dx < -150 else None
+        self.steer(want, 3)
+
+    def click(self, s, right=False):
+        """화면 좌표를 누른다. 조작판 위·다른 창에 가려진 곳·게임이 앞에 없을 때는 누르지 않는다."""
+        if not self.safe(s):
+            return False
         pt = W.POINT(int(s[0]), int(s[1]))
-        u32.ClientToScreen(h, ctypes.byref(pt))
-        if u32.GetAncestor(u32.WindowFromPoint(pt), 2) != h or u32.GetForegroundWindow() != h:   # 다른 창이 가리고 있다
-            continue
-        tried += 1
+        u32.ClientToScreen(self.h, ctypes.byref(pt))
+        if u32.GetAncestor(u32.WindowFromPoint(pt), 2) != self.h or u32.GetForegroundWindow() != self.h:
+            return False
         u32.SetCursorPos(pt.x, pt.y)
-        time.sleep(0.08)
-        u32.mouse_event(2, 0, 0, 0, 0)
-        time.sleep(0.03)
-        u32.mouse_event(4, 0, 0, 0, 0)
-        now = 0
-        for _ in range(14):                  # 게임이 선택을 확정할 때까지
-            time.sleep(0.05)
-            now = rq(sel + OFF_SEL_NOW)
-            if now and now == rq(sel + OFF_SEL_SYNC):
+        time.sleep(0.12)
+        u32.mouse_event(8 if right else 2, 0, 0, 0, 0)
+        time.sleep(0.04)
+        u32.mouse_event(0x10 if right else 4, 0, 0, 0, 0)
+        return True
+
+    def selected(self, before=None):
+        """지금 골라진 유닛. before 를 주면 선택이 그것에서 '바뀌고' 게임이 확정할 때까지 기다린다 (최대 0.8초).
+        바뀌기 전에 읽으면 방금 전 유닛을 고른 줄 안다."""
+        now = self.rq(self.sel + OFF_SEL_NOW)
+        for _ in range(16 if before is not None else 0):
+            if now and now != before and now == self.rq(self.sel + OFF_SEL_SYNC):
                 break
-        key = material(now)[0] if now and now == rq(sel + OFF_SEL_SYNC) else None   # 겹쳐서 다른 유닛이 골라졌어도 같은 재료면 된다
-        print(f'  누름 ({pt.x},{pt.y}) 고른 유닛 {(g.read(now + OFF_TYPE, 4) or b"")[::-1] if now else None} 단축키 {key}')
-        if key and u32.GetForegroundWindow() == h:
             time.sleep(0.05)
-            tap(ord(key), u32.MapVirtualKeyW(ord(key), 0))
-            return 'ok'
-    return ('재료 유닛을 고르지 못했어요. 다른 유닛에 가려져 있으면 조금 떼어 놓고 다시 눌러 주세요' if tried
-            else '재료 유닛을 화면에 못 잡았어요. 창고에 있으면 꺼내 주세요')
+            now = self.rq(self.sel + OFF_SEL_NOW)
+        return now if now == self.rq(self.sel + OFF_SEL_SYNC) else 0
+
+    def step_aside(self, p, n, far=130):
+        """골라져 있는 유닛 p 를 옆으로 옮긴다 (오른쪽 클릭). n 번째마다 다른 방향."""
+        xyz = self.where(p)
+        if not xyz:
+            return
+        ang, r = n * 2.4, far + 25 * n
+        if self.click(self.screen((xyz[0] + r * math.cos(ang), xyz[1] + r * math.sin(ang), xyz[2])), right=True):
+            for _ in range(12):              # 걸어갈 때까지
+                time.sleep(0.1)
+                now = self.where(p)
+                if now and (now[0] - xyz[0]) ** 2 + (now[1] - xyz[1]) ** 2 > (r * 0.6) ** 2:
+                    break
+            time.sleep(0.15)
+
+    def spread(self, p, n):
+        """방금 만든 유닛을 다른 유닛과 겹치지 않게 옮겨 둔다. 게임이 새 유닛을 골라 줬을 때만 (아니면 다음 조합 때 눌러서 찾는다)."""
+        auto = self.selected() == p
+        print(f'  새 유닛 {"자동 선택됨 -> 옆으로 옮김" if auto else "자동 선택 안 됨"}')
+        if auto:
+            self.step_aside(p, n)
+
+    def combine(self, opts):
+        """버튼 조합 한 번: 조합 버튼을 가진 재료 유닛을 골라 단축키를 누른다.
+        다른 내 유닛이 겹쳐 서서 대신 골라지면 그 유닛을 옆으로 비켜 세우고 다시 누른다."""
+        g = self.g
+        keys = {struct.pack('<I', int.from_bytes(c.encode(), 'big')): k for c, k in opts}
+        key_of = lambda p: keys.get((self.unit(p) or b'')[OFF_TYPE:OFF_TYPE + 4])
+        cx, cy = self.cam() or (0, 0)
+        cands = []
+        for p in g.unit_ptrs() or ():
+            xyz = key_of(p) and self.where(p)
+            if xyz:
+                cands.append(((xyz[0] - cx) ** 2 + (xyz[1] - cy) ** 2, p))
+        if not cands:
+            return '조합 버튼을 가진 재료 유닛이 없어요'
+        tried = moved = 0
+        for _, p in sorted(cands)[:4]:           # 화면 가운데에서 가까운 것부터
+            if not key_of(p) or not self.aim(p):
+                continue
+            for dx, dy in ((0, 0), (0, -24), (0, 0), (0, -48), (-18, -12), (18, -12), (0, 0)):   # 몸통 여러 군데
+                s, before = self.body(p), self.selected()
+                if not s:
+                    break
+                if before != p:
+                    if not self.click((s[0] + dx, s[1] + dy)):
+                        break
+                    now = self.selected(before)
+                else:
+                    now = p
+                tried += 1
+                key = key_of(now)                # 다른 유닛이 골라졌어도 같은 재료면 된다
+                print(f'  누름 ({s[0] + dx:.0f},{s[1] + dy:.0f}) 고른 유닛 {(g.read(now + OFF_TYPE, 4) or b"")[::-1] if now else None}'
+                      f'{" (선택 안 바뀜)" if now == before and now != p else ""} 단축키 {key}')
+                if key and u32.GetForegroundWindow() == self.h:
+                    time.sleep(0.05)
+                    tap(ord(key), u32.MapVirtualKeyW(ord(key), 0))
+                    return 'ok'
+                a, b = self.where(now) if now and self.unit(now) else None, self.where(p)
+                if a and b and moved < 4 and (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 < 80 ** 2:   # 겹쳐 선 내 유닛이 가로막았다
+                    self.step_aside(now, moved, far=110)
+                    moved += 1
+        return ('재료 유닛을 고르지 못했어요. 다른 유닛에 가려져 있으면 조금 떼어 놓고 다시 눌러 주세요' if tried
+                else '재료 유닛을 화면에 못 잡았어요. 창고에 있으면 꺼내 주세요')
 
 
 def _chat(text):
