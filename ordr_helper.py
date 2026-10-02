@@ -8,10 +8,10 @@
 
 옵션: --lan (폰에서 보기)  --no-browser  --port=NNNN  --overlay-only (게임 위 작은 창만 띄움)
 """
-import ctypes, ctypes.wintypes as W, json, math, os, struct, subprocess, sys, threading, time, traceback, urllib.request
+import ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.6.9'
+VERSION = '1.7.0'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -1083,6 +1083,8 @@ def game_steps(steps):
                         break
                 else:
                     print(f'조합 {i + 1}/{len(steps)} id={sid}: 결과 유닛이 안 생김')
+                    if cmd and i + 1 == len(steps):
+                        return f'명령어({cmd})는 입력했는데 새 유닛이 안 보여요. 게임에서 조합됐는지 확인해 주세요'
                     return (f'{i + 1}번째 조합이 게임에서 안 됐어요. ' if len(steps) > 1 else '게임에서 조합이 안 됐어요. ') + '목재·골드·재료를 확인해 주세요'
                 time.sleep(0.15)
             return 'ok'
@@ -1283,23 +1285,37 @@ class Clicker:
             now = self.rq(self.sel + OFF_SEL_NOW)
         return now if now == self.rq(self.sel + OFF_SEL_SYNC) else 0
 
-    def step_aside(self, p, n, far=130):
-        """골라져 있는 유닛 p 를 옆으로 옮긴다 (오른쪽 클릭). n 번째마다 다른 방향."""
-        xyz = self.where(p)
-        if not xyz:
-            return
-        ang, r = n * 2.4, far + 25 * n
-        if self.click(self.screen((xyz[0] + r * math.cos(ang), xyz[1] + r * math.sin(ang), xyz[2])), right=True):
-            for _ in range(12):              # 걸어갈 때까지
-                time.sleep(0.1)
-                now = self.where(p)
-                if now and (now[0] - xyz[0]) ** 2 + (now[1] - xyz[1]) ** 2 > (r * 0.6) ** 2:
-                    break
-            time.sleep(0.15)
+    def scatter(self, p, n):
+        """유닛 p 둘레에 뭉쳐 선 내 유닛들을 한꺼번에 끌어서 고른 뒤 옆으로 보낸다.
+        무리로 움직이면 게임이 대형을 지어 서로 떨어뜨려 세우니, 겹쳐서 못 누르던 유닛이 따로 서게 된다."""
+        s, xyz = self.body(p), self.where(p)
+        if not s or not xyz:
+            return False
+        a, b = (s[0] - 55, s[1] - 75), (s[0] + 55, s[1] + 35)
+        if not self.move(a) or not self.safe(b):
+            return False
+        time.sleep(0.12)
+        u32.mouse_event(2, 0, 0, 0, 0)               # 끌어서 고르기
+        for k in range(1, 7):
+            time.sleep(0.03)
+            self.move((a[0] + (b[0] - a[0]) * k / 6, a[1] + (b[1] - a[1]) * k / 6))
+        time.sleep(0.06)
+        u32.mouse_event(4, 0, 0, 0, 0)
+        time.sleep(0.3)
+        if not self.click(self.screen((xyz[0] + (320 if n % 2 == 0 else -320), xyz[1] + 160, xyz[2])), right=True):
+            return False
+        for _ in range(25):                          # 걸어갈 때까지 (최대 2.5초)
+            time.sleep(0.1)
+            now = self.where(p)
+            if now and (now[0] - xyz[0]) ** 2 + (now[1] - xyz[1]) ** 2 > 200 ** 2:
+                break
+        time.sleep(0.6)                              # 뒤따라오는 유닛들이 자리를 잡을 때까지
+        return True
 
     def combine(self, opts):
         """버튼 조합 한 번: 조합 버튼을 가진 재료 유닛을 골라 단축키를 누른다.
-        마우스가 그 재료 위에 올라간 것을 게임에서 읽어 확인한 뒤에 누르고, 골라진 유닛도 다시 확인한다."""
+        마우스가 그 재료 위에 올라간 것을 게임에서 읽어 확인한 뒤에 누르고, 골라진 유닛도 다시 확인한다.
+        겹쳐 서 있어서 마우스로 못 찾으면 둘레 유닛들을 옮겨 떨어뜨린 뒤 다시 한다."""
         g = self.g
         keys = {struct.pack('<I', int.from_bytes(c.encode(), 'big')): k for c, k in opts}
         key_of = lambda p: keys.get((self.unit(p) or b'')[OFF_TYPE:OFF_TYPE + 4])
@@ -1312,32 +1328,32 @@ class Clicker:
                 cands.append(((xyz[0] - cx) ** 2 + (xyz[1] - cy) ** 2, p))
         if not cands:
             return '조합 버튼을 가진 재료 유닛이 없어요'
-        tried = moved = 0
+        tried = scattered = 0
         for _, p in sorted(cands)[:4]:           # 화면 가운데에서 가까운 것부터
-            for _again in range(3):
+            for _again in range(5):
                 if not key_of(p) or not self.aim(p):
                     break
                 tried += 1
                 now = before = self.selected()
                 if not key_of(before):           # 이미 재료가 골라져 있으면 누를 필요 없다
-                    found = self.point_at(p, key_of)
-                    if not found and not self.move((self.body(p)[0], self.body(p)[1] - 15)):
+                    if not self.point_at(p, key_of):
+                        print(f'  마우스로 {name(p)} 를 못 찾음 -> 둘레 유닛을 옮겨 떨어뜨림 ({scattered + 1}번째)')
+                        if scattered < 2 and self.scatter(p, scattered):
+                            scattered += 1
+                            continue
                         break
                     time.sleep(0.08)
                     self.press()
                     now = self.selected(before)
-                    print(f'  {"마우스 아래 재료 확인" if found else "못 찾아서 그냥"} 누름 -> 고른 유닛 {name(now)}{" (선택 안 바뀜)" if now == before else ""}')
+                    print(f'  마우스 아래 재료 확인 누름 -> 고른 유닛 {name(now)}{" (선택 안 바뀜)" if now == before else ""}')
                 key = key_of(now)                # 겹친 다른 유닛이 골라졌어도 같은 재료면 된다
                 if key and u32.GetForegroundWindow() == self.h:
                     time.sleep(0.05)
                     tap(ord(key), u32.MapVirtualKeyW(ord(key), 0))
                     return 'ok'
-                a, b = self.where(now) if now and now != before and self.unit(now) else None, self.where(p)
-                if not (a and b and moved < 4 and (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 < 80 ** 2):
-                    break
-                self.step_aside(now, moved, far=110)   # 겹쳐 선 내 유닛이 가로막았다: 비켜 세우고 다시
-                moved += 1
-        return ('재료 유닛을 고르지 못했어요. 다른 유닛에 가려져 있으면 조금 떼어 놓고 다시 눌러 주세요' if tried
+                time.sleep(0.2)                  # 재료 위에서 눌렀는데 선택이 안 바뀌었다: 한 박자 쉬고 다시
+        return ('재료 유닛을 고르지 못했어요. 유닛들을 옮겨 떨어뜨려 봤는데도 안 눌려요' if scattered
+                else '재료 유닛을 고르지 못했어요. 한 번 더 눌러 주세요' if tried
                 else '재료 유닛을 화면에 못 잡았어요. 창고에 있으면 꺼내 주세요')
 
 
