@@ -11,7 +11,7 @@
 import ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.7.4'
+VERSION = '1.7.5'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -1066,7 +1066,13 @@ OFF_VP = 0x58                               # CTextTagManager: 화면 변환 행
 OFF_HOVER = 0x468                           # CWorldFrameWar3: 지금 마우스 아래에 있는 유닛
 OFF_MINIMAP, OFF_MM_RECT, OFF_MM_SCREEN, OFF_MM_WORLD = 0x2f0, 0x1e0, 0x234, 0x290   # 월드프레임 -> CMinimap: 자리(아래,왼,위,오른) / 화면 범위 / 맵 범위
 MINI_CAL = {}                               # (게임 pid, 창 크기) -> 미니맵 눈금 (px, py, X, Y, kx, ky, 맵 범위)
-HIT_AT = {}                                 # 유닛 종류 -> 지난번에 눌렸던 자리 (예측점에서 벗어난 픽셀)
+# 유닛 종류(코드) -> 그 유닛 몸에서 클릭이 먹는 자리. 맵 위 위치가 아니라 '유닛 발끝에서 얼마나 떨어진 곳을 눌러야 하나'라서
+# 유닛이 어디 서 있든 같다(모델마다 다를 뿐). 카메라 거리 4000 일 때의 픽셀로 적어 두고, 다른 거리에선 비례로 바꿔 쓴다.
+HITS_PATH = os.path.join(HERE, 'hits.json')
+try:
+    HIT_AT = {k: tuple(v) for k, v in json.load(open(HITS_PATH, encoding='utf-8')).items()}
+except Exception:
+    HIT_AT = {}
 u32.WindowFromPoint.argtypes, u32.WindowFromPoint.restype = [W.POINT], W.HWND
 u32.GetAncestor.argtypes, u32.GetAncestor.restype = [W.HWND, W.UINT], W.HWND
 u32.GetClientRect.argtypes = [W.HWND, ctypes.POINTER(W.RECT)]
@@ -1376,16 +1382,24 @@ class Clicker:
         near = lambda d: d[0] ** 2 + d[1] ** 2
         pts = (sorted(((dx, dy) for dx in range(-30, 31, 6) for dy in range(-30, 31, 6) if dx * dx + dy * dy <= 900), key=near)
                + sorted(((dx, dy) for dx in range(-63, 64, 9) for dy in range(-63, 64, 9) if 900 < dx * dx + dy * dy <= 3969), key=near))
-        code = self.g.read(p + OFF_TYPE, 4)
+        code = (self.g.read(p + OFF_TYPE, 4) or b'')[::-1].decode('latin1')
+        d = self.g.read(self.rq(self.g.world[0] + OFF_CAM) + OFF_CAM_DIST, 4)
+        zoom = max(struct.unpack('<f', d)[0], 500) / 4000 if d and len(d) == 4 else 1   # 멀리서 볼수록 같은 거리가 적은 픽셀
         if code in HIT_AT:                        # 이 종류가 지난번에 눌렸던 자리부터 본다: 대개 첫 번에 맞는다
-            pts.insert(0, HIT_AT[code])
+            pts.insert(0, (round(HIT_AT[code][0] / zoom), round(HIT_AT[code][1] / zoom)))
         for dx, dy in pts:
             if self.move((s[0] + dx, s[1] + dy - 15)):
                 time.sleep(0.025)
                 if ok(self.hover()):
                     time.sleep(0.03)              # 한 박자 늦게 읽혔을 수 있으니 같은 자리에서 다시 확인
                     if ok(self.hover()):
-                        HIT_AT[code] = (dx, dy)
+                        new = (round(dx * zoom), round(dy * zoom))
+                        if HIT_AT.get(code) != new:
+                            HIT_AT[code] = new
+                            try:
+                                json.dump(HIT_AT, open(HITS_PATH, 'w', encoding='utf-8'))
+                            except OSError:
+                                pass
                         return True
         return False
 
@@ -1449,6 +1463,8 @@ class Clicker:
             return '조합 버튼을 가진 재료 유닛이 없어요'
         tried = scattered = 0
         for _, p in sorted(cands)[:4]:           # 화면 가운데에서 가까운 것부터
+            if not self.unit(p):                 # 그새 사라졌다 (판이 끝났거나 다른 조합에 쓰였다)
+                continue
             for _again in range(5):
                 if not key_of(p) or not self.aim(p):
                     break
@@ -1475,6 +1491,8 @@ class Clicker:
                     tap(ord(key), u32.MapVirtualKeyW(ord(key), 0))
                     return 'ok'
                 time.sleep(0.2)                  # 재료 위에서 눌렀는데 선택이 안 바뀌었다: 한 박자 쉬고 다시
+        if not any(self.unit(p) for p in g.unit_ptrs() or ()):
+            return '내 유닛이 하나도 없어요. 판이 끝난 것 같아요'
         return ('재료 유닛을 고르지 못했어요. 유닛들을 옮겨 떨어뜨려 봤는데도 안 눌려요' if scattered
                 else '재료 유닛을 고르지 못했어요. 한 번 더 눌러 주세요' if tried
                 else '재료 유닛을 화면에 못 잡았어요. 창고에 있으면 꺼내 주세요')
