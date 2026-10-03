@@ -50,7 +50,7 @@ input[type=number] { width:70px }
 .rc .r1 { display:flex; align-items:center; gap:6px } .rc .r1 img { width:22px; height:22px; border-radius:3px }
 .rc .rn { font-size:14px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0 }
 .rc .rg { font-size:12px; white-space:nowrap } .rc .rs { margin-left:auto; font-size:13px; white-space:nowrap }
-.rc .r2 { margin:5px 0 4px; display:flex; flex-wrap:wrap; gap:4px }
+.rc .r2 { margin:5px 0 4px; display:flex; flex-wrap:wrap; gap:4px; align-items:center }
 .bd { font-size:12px; padding:1px 7px; border-radius:5px; background:#173427; color:#8fe0b5; font-weight:600 } .bd.neg { background:#3a1d1d; color:#ffa3a3 }
 .rbar { height:4px; background:#0b0d11; border-radius:2px; overflow:hidden; display:flex } .rbar div { height:100%; background:var(--acc) } .rbar .w { background:var(--warn) }
 .rx { background:none; border:0; color:var(--mute); cursor:pointer; padding:0 0 0 4px; font-size:12px } .rx:hover { color:var(--bad) }
@@ -67,6 +67,8 @@ input[type=number] { width:70px }
 .gh { display:flex; justify-content:space-between; padding:3px 7px; font-size:12px; font-weight:700; background:var(--card2); border-left:3px solid var(--gc); border-radius:4px 4px 0 0; color:var(--gc) }
 .gh span { color:var(--dim); font-weight:400 }
 .cell { position:relative; display:flex; align-items:center; gap:4px; height:19px; padding:0 4px 0 5px; background:var(--card); border-bottom:1px solid #1f232a }
+.dt { flex:none; position:relative; font-size:10px; font-weight:700; line-height:14px; padding:0 3px; border-radius:3px }
+.dt.p { color:#ff9166; background:rgba(255,145,102,.16) } .dt.m { color:#b79bff; background:rgba(183,155,255,.18) } .dt.h { color:#f0d264; background:rgba(240,210,100,.15) }
 .cell .pg { position:absolute; left:0; top:0; bottom:0; background:rgba(106,168,255,.15); pointer-events:none } .cell .pg.w { background:rgba(240,180,70,.16) }
 .cell img { width:15px; height:15px; border-radius:2px; flex:none; position:relative }
 .cell .nm { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:12px; position:relative }
@@ -140,7 +142,7 @@ body.mini #pins { display:block } body.mini #pins .it { display:block; padding:3
   <span id="hiddenBar"></span>
   <span>접기 <span class="seg" id="gfilter"><button data-f="0">안 접음</button><button data-f="30">30%↓</button><button data-f="50">50%↓</button><button data-f="70">70%↓</button></span></span>
   <span class="seg" id="gsort"><button data-s="pct">진행률순</button><button data-s="orig">sions 순서</button></span>
-  <span><span class="go">조합</span> <span class="go hi">N단계</span> 누르면 게임에서 대신 조합 · <b class="ok">가능</b> 지금 바로 · <b class="warn">N단계</b> 중간 조합 N번 · <b>%</b> 하위 재료까지 진행률 <span class="warn">+%</span> 흔함선택위습으로 채울 몫 · <b class="warn">위습N</b> 위습 N개 씀 · <span class="star">★</span> 추천 · <span class="pin">📌</span> 찜 · <b>?</b> 조합식</span>
+  <span><span class="go">조합</span> <span class="go hi">N단계</span> 누르면 게임에서 대신 조합 · <b class="ok">가능</b> 지금 바로 · <b class="warn">N단계</b> 중간 조합 N번 · <b>%</b> 하위 재료까지 진행률 <span class="warn">+%</span> 흔함선택위습으로 채울 몫 · <b class="warn">위습N</b> 위습 N개 씀 · <span class="dt p">물</span> 물딜 <span class="dt m">마</span> 마딜 (전설 이상) · <span class="star">★</span> 추천 · <span class="pin">📌</span> 찜 · <b>?</b> 조합식</span>
 </div>
 <div id="grid"></div>
 <div id="modal" class="ov" hidden><div class="box" id="mbox"></div></div>
@@ -444,11 +446,14 @@ function recCard(x) {
     : x.ready ? '<b class="ok">바로 가능</b>' : x.pr.pct >= 1 ? `<b class="warn">${stepLabel(x.pr)}</b>` : `<b>${pctText(x.pr)}</b>`;
   return `<div class="rc it" data-id="${x.it.id}" title="${esc(x.it.name)}${lack ? '\n부족: ' + esc(lack) : ''}">` +
     `<div class="r1">${imgTag(x.it)}<span class="rn"><span class="star">★</span> ${esc(short(x.it.name))}</span><span class="rg" style="color:${gcolor(x.it.grade)}">${esc(x.it.grade.split(' ')[0])}</span><span class="rs">${st}</span><button class="rx" data-ex="${x.it.id}" title="이 유닛은 추천에서 빼기">✕</button></div>` +
-    `<div class="r2">${x.gains.map(([k, d]) => `<span class="bd${d < 0 ? ' neg' : ''}">${k} ${d > 0 ? '+' : ''}${d}</span>`).join('')}</div>` +
+    `<div class="r2">${dmgTag(x.it)}${x.gains.map(([k, d]) => `<span class="bd${d < 0 ? ' neg' : ''}">${k} ${d > 0 ? '+' : ''}${d}</span>`).join('')}</div>` +
     `<div class="rbar"><div style="width:${pc - wp}%"></div><div class="w" style="width:${wp}%"></div></div>` +
     (x.reason ? `<div class="r0" title="${esc(x.reason)}">💡 ${esc(x.reason)}</div>` : '') +
     `<div class="r3">${x.ready ? '<span class="ok">재료 다 있음</span>' : x.pr.pct >= 1 ? (wildText(x.pr) || `중간 조합 ${x.pr.steps}번이면 완성`) : '부족: ' + esc(lack) + (wispsNeeded(x.pr.miss) ? ` · 랜덤위습 약 ${wispsNeeded(x.pr.miss)}개` : '')}</div></div>`;
 }
+// 물딜·마딜 표시: sions 목록이 물뎀/마뎀/하이브리드로 나눠 둔 등급(전설 이상)만 안다
+const dmgTag = it => it.cat === '물뎀' ? '<span class="dt p" title="물리 딜러">물</span>' : it.cat === '마뎀' ? '<span class="dt m" title="마법 딜러">마</span>'
+  : it.cat === '하이브리드' ? '<span class="dt h" title="물리·마법 둘 다">물마</span>' : '';
 const imgTag = (it, cls = '') => it.img ? `<img class="${cls}" src="${THUMB + it.img}" referrerpolicy="no-referrer" loading="lazy" onerror="this.style.visibility='hidden'">` : `<img class="${cls}" style="visibility:hidden">`;
 
 function render() {
@@ -571,7 +576,7 @@ function renderGrid() {
       rows.push({ idx, sort: (pr ? pr.pct : 0) + (ready ? 1 : 0), steps: pr ? pr.steps : 0, wn: pr ? pr.wpct : 0, n,
         keep: query || n > 0 || ready || pinned || recIds.has(it.id) || pc >= gfilter,
         html: `<div class="cell${n ? ' have' : ''}${ready ? ' ready' : ''}${flash[it.id] > now ? ' flash' : ''}" title="${tip}">` +
-          (pr && pr.pct > 0 && pr.pct < 1 ? `<div class="pg" style="width:${(pr.pct - pr.wpct) * 100}%"></div>` + (pr.wpct ? `<div class="pg w" style="left:${(pr.pct - pr.wpct) * 100}%;width:${pr.wpct * 100}%"></div>` : '') : '') + imgTag(it) +
+          (pr && pr.pct > 0 && pr.pct < 1 ? `<div class="pg" style="width:${(pr.pct - pr.wpct) * 100}%"></div>` + (pr.wpct ? `<div class="pg w" style="left:${(pr.pct - pr.wpct) * 100}%;width:${pr.wpct * 100}%"></div>` : '') : '') + imgTag(it) + dmgTag(it) +
           `<span class="nm">${pinned ? '<span class="pin">📌</span>' : ''}${recIds.has(it.id) ? '<span class="star">★</span>' : ''}${name}</span>${label}` +
           `<span class="ct">${n || ''}</span><button class="q" data-id="${it.id}" title="조합식">?</button></div>` });
     });
@@ -754,7 +759,7 @@ function openRecipe(id, push = true) {
   const lack = pr ? Object.entries(pr.miss) : [];
   const up = (usedIn[id] || []).map(u => card(u)).join('');
   $('mbox').innerHTML =
-    `<div class="mh">${mstack.length > 1 ? '<button class="ibtn" data-act="back">←</button>' : ''}<b>${esc(it.name)} <span style="color:${gcolor(it.grade)}">- ${esc(it.grade)}</span></b>` +
+    `<div class="mh">${mstack.length > 1 ? '<button class="ibtn" data-act="back">←</button>' : ''}<b>${esc(it.name)} <span style="color:${gcolor(it.grade)}">- ${esc(it.grade)}</span></b>${dmgTag(it)}` +
     (craft && it.rank >= REC_FROM && it.rank < REC_TO ? `<button class="ibtn" data-ex="${id}">${excluded.has(id) ? '추천에 다시 넣기' : '추천에서 빼기'}</button>` : '') +
     (craft && sendPlan(id) ? `<button class="ibtn" data-chat="${id}" title="게임에서 재료 유닛을 고르고 조합 단축키(또는 명령어)를 대신 눌러요">게임에서 조합${sendPlan(id).length > 1 ? ` (${sendPlan(id).length}단계)` : chatCmd(it) ? ` (${esc(chatCmd(it))})` : ''}${costText(planCost(sendPlan(id))) ? ` · <span class="${lacks(planCost(sendPlan(id))) ? 'bad' : 'dim'}">${costText(planCost(sendPlan(id)))}${lacks(planCost(sendPlan(id))) ? ' 모자람' : ''}</span>` : ''}</button>` : '') +
     (craft ? `<button class="ibtn" data-act="pin">${pinned ? '📌 찜 해제' : '📌 찜하기'}</button>` : '') +
