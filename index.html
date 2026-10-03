@@ -891,7 +891,7 @@ function openSettings() {
     `<label><input type="checkbox" id="setWisp" ${selWisp ? 'checked' : ''}> 흔함선택위습을 흔함 대신 쓰기 (진행률에 넣고, 조합 버튼이 위습도 대신 보내요)</label></div>` +
     `<div class="sec"><label><input type="checkbox" id="setStartup" ${srv.startup ? 'checked' : ''}> 윈도우 켤 때 자동 실행 (창 없이 뒤에서)</label>` +
     ` <button class="ibtn" data-act="quit" style="float:right">프로그램 끄기</button><br>` +
-    `<label><input type="checkbox" id="setStay" ${srv.stay !== false ? 'checked' : ''}> 조합이 끝나도 게임 창에 그대로 있기 (끄면 누르던 창으로 돌아가요)</label>` +
+    `<label><input type="checkbox" id="setStay" ${srv.stay !== false ? 'checked' : ''}> 조합이 끝나면 게임 창에 그대로 있기 · 게임 위 큰 창도 닫기 (끄면 누르던 창으로 돌아가요)</label>` +
     `<div style="margin-top:6px">게임 위 큰 창 여닫는 키 <select id="setBigKey">${['`', 'F1', 'F4', 'F5', 'F7', 'Insert', '마우스 옆버튼'].map(k => `<option${k === (srv.big_key || '마우스 옆버튼') ? ' selected' : ''}>${k}</option>`).join('')}</select> <span class="dim">(\` 는 숫자 1 왼쪽 키)</span> · 큰 창 진하기 <input id="setBigAlpha" type="range" min="30" max="100" step="5" value="${srv.big_alpha || 100}" style="vertical-align:middle;width:110px"> <span id="bigAlphaV">${srv.big_alpha || 100}%</span></div>` +
     `<div class="dim" style="margin-top:4px">버전 ${esc(srv.version || '')}${srv.update ? ` · <a href="${esc(srv.update.url)}" target="_blank" style="color:var(--gold)">새 버전 ${esc(srv.update.ver)} 받기</a>` : ''} · 맵 ${esc(srv.map_version || '')}</div></div>` +
     (excluded.size ? `<div class="sec"><h4>추천에서 뺀 유닛 (누르면 되돌림)</h4>${[...excluded].filter(id => items[id]).map(id => `<button class="ibtn" data-ex="${id}" style="margin:2px">${esc(nm(id))} <span class="dim">${esc(items[id].grade.split(' ')[0])}</span> ↩</button>`).join('')}</div>` : '') +

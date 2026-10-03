@@ -11,7 +11,7 @@
 import collections, ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.7.24'
+VERSION = '1.7.25'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -1139,7 +1139,7 @@ def game_steps(steps):
 
 
 def _steps(g, steps):
-    prev, old, ui, cam0 = u32.GetForegroundWindow(), W.POINT(), None, None
+    prev, old, ui, cam0, good = u32.GetForegroundWindow(), W.POINT(), None, None, False
     big = big_window()
     big = big if big_shown(big) else None   # 큰 창이 게임 화면을 가리니 조합하는 동안 감춘다
     if big:
@@ -1185,6 +1185,7 @@ def _steps(g, steps):
                     return f'명령어({cmd})는 입력했는데 새 유닛이 안 보여요. 게임에서 조합됐는지 확인해 주세요'
                 return (f'{i + 1}번째 조합이 게임에서 안 됐어요. ' if len(steps) > 1 else '게임에서 조합이 안 됐어요. ') + '목재·골드·재료를 확인해 주세요'
             time.sleep(0.05)
+        good = True
         return 'ok'
     except Exception as e:
         traceback.print_exc()
@@ -1192,7 +1193,8 @@ def _steps(g, steps):
     finally:   # 화면을 처음 보던 곳으로 -> 원래 창(페이지)으로 -> 마우스 제자리. 창보다 마우스를 먼저 돌리면 게임이 화면을 밀어 버린다
         if cam0 and ui and not ui.err:
             ui.back(cam0)
-        if big:
+        # 조합이 됐으면 큰 창은 감춘 채로 둔다: 만든 유닛을 바로 옮겨야 하니 게임이 보여야 한다. 안 됐으면 까닭을 봐야 하니 다시 띄운다
+        if big and not (good and cfg.get('stay', True)):
             big_show(big, True)
         gh, r = game_window(g.pid), W.RECT()
         if prev and prev != gh and prev != big and prev != u32.GetForegroundWindow() and not cfg.get('stay', True):   # 큰 창에서 눌렀으면 초점은 게임에 둔다
