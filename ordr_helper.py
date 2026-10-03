@@ -11,7 +11,7 @@
 import collections, ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.7.14'
+VERSION = '1.7.15'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -75,7 +75,7 @@ def apply_mapping(mp):
 
 state = {'status': '워크3 기다리는 중', 'counts': {}, 'players': {}, 'ts': 0, 'scan': 0,
          'owner': cfg['owner'], 'auto': cfg['auto'], 'managed': [], 'notice': '', 'data_ver': 1,
-         'map_version': cfg['map_version'], 'big_key': cfg.get('big_key', '마우스 옆버튼'), 'big_alpha': cfg.get('big_alpha', 100), 'version': VERSION, 'frozen': FROZEN, 'update': None, 'startup': False}
+         'map_version': cfg['map_version'], 'big_key': cfg.get('big_key', '마우스 옆버튼'), 'big_alpha': cfg.get('big_alpha', 100), 'version': VERSION, 'frozen': FROZEN, 'update': None, 'startup': False, 'soon': None}
 apply_mapping(json.load(open(res_or_local('mapping.json'), encoding='utf-8')))
 COMBOS = {}   # 버튼으로 조합하는 유닛: {결과 sions id: [[버튼을 가진 유닛 코드, 단축키], ...]}
 
@@ -350,16 +350,36 @@ class Game:
         ptrs = self.unit_ptrs()
         if ptrs is None:
             return None
-        found, self.samples = [], []
+        found, self.samples, self.neutral, self.anchor = [], [], [], {}
         for q in ptrs:
             o = self.read(q, SZ)
             if not o or len(o) < SZ or o[:8] != self.vt:
                 continue
             if len(self.samples) < 400: self.samples.append(o)
-            sid = CODES.get(o[OFF_TYPE:OFF_TYPE + 4])
+            code, owner = o[OFF_TYPE:OFF_TYPE + 4], struct.unpack_from('<I', o, OFF_OWNER)[0]
+            sid = CODES.get(code)
+            if code == b'U50h':                  # h05U '연구소 효과': 플레이어마다 자기 구역 한가운데에 하나 서 있다
+                self.anchor[owner] = q
             if sid is not None and struct.unpack_from('<I', o, OFF_GONE)[0] == 0:
-                found.append((struct.unpack_from('<I', o, OFF_OWNER)[0], sid))
+                found.append((owner, sid))
+                if owner >= 24:                  # 중립
+                    self.neutral.append((q, sid))
         return found
+
+    def pos(self, p):
+        """유닛의 월드 좌표 (x, y, z)."""
+        o = p and self.read(p + OFF_SPRITE, 8)
+        d = o and self.read(struct.unpack('<Q', o)[0] + OFF_POS, 12)
+        return struct.unpack('<3f', d) if d and len(d) == 12 else None
+
+    def reward(self, me):
+        """내 구역 한가운데에 서 있는 중립 유닛의 sions id: 몹을 150마리쯤 잡으면 받는 보상 유닛. 없으면 None."""
+        a = self.pos(self.anchor.get(me))
+        for q, sid in self.neutral if a else ():
+            b = self.pos(q)
+            if b and abs(a[0] - b[0]) < 64 and abs(a[1] - b[1]) < 64:
+                return sid
+        return None
 
     def find_names(self):
         """플레이어 이름 [(슬롯, 이름)]. CPlayerWar3: 슬롯 번호 +0x6a, 이름 주소 +0xa0, 길이 +0xa8 (3.0.0.24268).
@@ -569,6 +589,7 @@ def run_list_mode(g):
         if me is None:
             me = g.local_slot()
         publish(found, me)
+        state['soon'] = g.reward(state['owner'])
         r = g.resources()
         state.update(gold=r and r[0], wood=r and r[1])
         state.update(tick_ms=round((time.time() - t0) * 1000), hot_mb=0, mode='list')
@@ -1232,10 +1253,7 @@ class Clicker:
         return o if ok else None
 
     def where(self, p):
-        """유닛의 월드 좌표 (x, y, z)."""
-        o = self.g.read(p + OFF_SPRITE, 8)
-        pos = o and self.g.read(struct.unpack('<Q', o)[0] + OFF_POS, 12)
-        return struct.unpack('<3f', pos) if pos and len(pos) == 12 else None
+        return self.g.pos(p)
 
     def screen(self, xyz):
         """월드 좌표 -> 게임 창 안쪽 화면 좌표."""
