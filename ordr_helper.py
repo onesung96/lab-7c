@@ -11,7 +11,7 @@
 import collections, ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.7.9'
+VERSION = '1.7.10'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -1449,9 +1449,9 @@ class Clicker:
         a, b = self.where(blocker), self.where(p)
         if not a or not b:
             return False
-        dx, dy = (260, 140), (-260, 140), (260, -140), (-260, -140), (0, 300), (0, -300)
+        ways = (260, 140), (-260, 140), (260, -140), (-260, -140), (0, 300), (0, -300)
         for k in range(6):                           # 화면 안에서 누를 수 있는 쪽을 찾는다
-            ox, oy = dx[(n + k) % 6]
+            ox, oy = ways[(n + k) % 6]
             if self.click(self.screen((b[0] + ox, b[1] + oy, b[2])), right=True):
                 break
         else:
@@ -1464,9 +1464,10 @@ class Clicker:
                 break
         return True
 
-    def scatter(self, p, n):
+    def scatter(self, p, n, to=None):
         """유닛 p 둘레에 뭉쳐 선 내 유닛들을 한꺼번에 끌어서 고른 뒤 옆으로 보낸다.
-        무리로 움직이면 게임이 대형을 지어 서로 떨어뜨려 세우니, 겹쳐서 못 누르던 유닛이 따로 서게 된다."""
+        무리로 움직이면 게임이 대형을 지어 서로 떨어뜨려 세우니, 겹쳐서 못 누르던 유닛이 따로 서게 된다.
+        끌어서 고르면 남의 유닛은 안 골라지니, 남의 유닛과 겹친 내 유닛만 빼낼 때도 쓴다 (to = 보낼 곳)."""
         s, xyz = self.body(p), self.where(p)
         if not s or not xyz:
             return False
@@ -1481,7 +1482,7 @@ class Clicker:
         time.sleep(0.05)
         u32.mouse_event(4, 0, 0, 0, 0)
         time.sleep(0.2)
-        if not self.click(self.screen((xyz[0] + (320 if n % 2 == 0 else -320), xyz[1] + 160, xyz[2])), right=True):
+        if not self.click(self.screen(to or (xyz[0] + (320 if n % 2 == 0 else -320), xyz[1] + 160, xyz[2])), right=True):
             return False
         last = None
         for _ in range(50):                          # 다 걸어가서 멈출 때까지 (최대 2.5초)
@@ -1494,37 +1495,70 @@ class Clicker:
         return True
 
     def wisp(self, sid):
-        """흔함선택위습 하나를 골라, 이 흔함의 전시 유닛(7번 플레이어)이 서 있는 자리로 보낸다. 거기 닿으면 그 흔함으로 바뀐다."""
+        """흔함선택위습 하나를 골라, 이 흔함의 전시 유닛(7번 플레이어)이 서 있는 자리로 보낸다. 거기 닿으면 그 흔함으로 바뀐다.
+        남의 유닛과 겹쳐 서 있으면 눌러도 남의 것이 골라지니, 내 위습들을 끌어서 골라 빈 곳으로 먼저 옮긴다.
+        보내기 전에는 한 마리만 골라졌는지 확인한다: 여럿이 골라진 채로 보내면 전부 그 흔함이 돼 버린다."""
         g, want = self.g, set(REV.get(sid, ()))
         wcode = struct.pack('<I', int.from_bytes(b'e018', 'big'))
-        wisps, marks = [], []
+        wisps, marks, others, show = [], [], [], []
         for p in g.unit_ptrs() or ():
             o = g.read(p, SZ)
-            if not o or len(o) < SZ or o[:8] != g.vt or struct.unpack_from('<I', o, OFF_GONE)[0] or not self.where(p):
+            xyz = o and len(o) == SZ and o[:8] == g.vt and not struct.unpack_from('<I', o, OFF_GONE)[0] and self.where(p)
+            if not xyz:
                 continue
             code, own = o[OFF_TYPE:OFF_TYPE + 4], struct.unpack_from('<I', o, OFF_OWNER)[0]
-            if code == wcode and own == self.me:
+            if own != self.me:
+                others.append((p, xyz))
+                if own == 7:                     # 7번 = 이 맵의 전시용 컴퓨터
+                    show.append(xyz)
+                    if code in want:
+                        marks.append(p)
+            elif code == wcode:
                 wisps.append(p)
-            elif code in want and own == 7:      # 7번 = 이 맵의 전시용 컴퓨터
-                marks.append(p)
         if not wisps:
             return '흔함선택위습이 없어요'
         if not marks:
             return '그 흔함을 뽑는 자리를 못 찾았어요'
-        gap = lambda a, b: (self.where(a)[0] - self.where(b)[0]) ** 2 + (self.where(a)[1] - self.where(b)[1]) ** 2
-        w, m = min(((a, b) for a in wisps for b in marks), key=lambda ab: gap(*ab))
+        d2 = lambda a, b: (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2
         is_wisp = lambda p: (self.unit(p) or b'')[OFF_TYPE:OFF_TYPE + 4] == wcode
-        if not self.aim(w) or not self.point_at(w, is_wisp):
-            return '흔함선택위습을 고르지 못했어요'
-        before, under = self.selected(), self.hover()
+        crowd = lambda w: [f for f, xyz in others if d2(self.where(w), xyz) < 150 ** 2]
+        one = len(wisps) == 1
+        for again in range(2):
+            before = self.rq(self.sel + OFF_SEL_NOW)
+            # 지금 골라진 위습 말고 다른 위습을 누른다: 선택이 '바뀌어야' 한 마리만 골라진 것을 알 수 있다
+            pool = [w for w in wisps if w != before and is_wisp(w)] or [w for w in wisps if is_wisp(w)]
+            if not pool:
+                return '흔함선택위습이 없어요'
+            w = min(pool, key=lambda a: (bool(crowd(a)), min(d2(self.where(a), self.where(b)) for b in marks)))
+            m = min(marks, key=lambda b: d2(self.where(w), self.where(b)))
+            ok = lambda u: is_wisp(u) and (one or u != before)
+            if not self.aim(w):
+                return '흔함선택위습을 화면에 못 잡았어요'
+            x, y, z = self.where(w)
+            spots = [(min((d2((x + ox, y + oy), f) for _, f in others), default=1e12), (x + ox, y + oy, z))
+                     for ox, oy in ((0, -350), (350, 0), (-350, 0), (250, -250), (-250, -250), (250, 250), (-250, 250), (0, 350))
+                     if self.safe(self.screen((x + ox, y + oy, z))) and all(d2((x + ox, y + oy), k) > 400 ** 2 for k in show)]
+            spot = max(spots)[1] if spots and not again and max(spots)[0] > 200 ** 2 else None   # 남의 유닛과 가장 먼 빈 곳 (뽑는 자리 근처는 안 됨)
+            near = crowd(w)
+            if (not near or not spot) and self.point_at(w, ok):
+                break
+            if not spot or not self.scatter(w, 0, spot):
+                return ('흔함선택위습을 한 마리만 고르지 못했어요. 위습끼리 조금 떨어뜨려 주세요' if not near and not one
+                        else '흔함선택위습을 고르지 못했어요. 다른 유닛과 겹쳐 있으면 조금 떨어뜨려 주세요')
+            print(f'  위습들을 끌어서 골라 빈 곳으로 옮김 (겹쳐 있던 남의 유닛 {len(near)})')
+            # 방금 위습 여럿을 한꺼번에 골랐다: 원래 자리에 남은 남의 유닛을 눌러 선택을 푼다 (안 풀려도 아래 확인이 막는다)
+            if near and self.point_at(near[0], lambda u: u and not self.unit(u)):
+                self.press()
+                self.selected(self.rq(self.sel + OFF_SEL_NOW))
+        under = self.hover()
         self.press()
         if under == before:
             time.sleep(0.12)
             now = self.selected()
         else:
             now = self.selected(before)
-        if not is_wisp(now):
-            return '흔함선택위습을 고르지 못했어요'
+        if not is_wisp(now) or (now == before and not one):
+            return '흔함선택위습을 한 마리만 고르지 못했어요' if is_wisp(now) else '흔함선택위습을 고르지 못했어요'
         self.last = now                          # 보낸 위습: 유닛으로 바뀌면 사라진다
         if not self.aim(m) or not self.click(self.screen(self.where(m)), right=True):   # 전시 유닛의 발밑으로 이동
             return '뽑는 자리를 화면에서 누르지 못했어요'

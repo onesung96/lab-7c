@@ -52,7 +52,7 @@ input[type=number] { width:70px }
 .rc .rg { font-size:12px; white-space:nowrap } .rc .rs { margin-left:auto; font-size:13px; white-space:nowrap }
 .rc .r2 { margin:5px 0 4px; display:flex; flex-wrap:wrap; gap:4px }
 .bd { font-size:12px; padding:1px 7px; border-radius:5px; background:#173427; color:#8fe0b5; font-weight:600 } .bd.neg { background:#3a1d1d; color:#ffa3a3 }
-.rbar { height:4px; background:#0b0d11; border-radius:2px; overflow:hidden } .rbar div { height:100%; background:var(--acc) }
+.rbar { height:4px; background:#0b0d11; border-radius:2px; overflow:hidden; display:flex } .rbar div { height:100%; background:var(--acc) } .rbar .w { background:var(--warn) }
 .rx { background:none; border:0; color:var(--mute); cursor:pointer; padding:0 0 0 4px; font-size:12px } .rx:hover { color:var(--bad) }
 .rc .r0 { margin-top:4px; font-size:12px; color:var(--gold); white-space:nowrap; overflow:hidden; text-overflow:ellipsis }   /* 한 줄로: 카드 높이가 들쭉날쭉하지 않게 */
 .rc .r3 { margin-top:4px; font-size:11.5px; color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis } #pins { background:#241f14; border:1px solid #4a3d1c }
@@ -67,7 +67,7 @@ input[type=number] { width:70px }
 .gh { display:flex; justify-content:space-between; padding:3px 7px; font-size:12px; font-weight:700; background:var(--card2); border-left:3px solid var(--gc); border-radius:4px 4px 0 0; color:var(--gc) }
 .gh span { color:var(--dim); font-weight:400 }
 .cell { position:relative; display:flex; align-items:center; gap:4px; height:19px; padding:0 4px 0 5px; background:var(--card); border-bottom:1px solid #1f232a }
-.cell .pg { position:absolute; left:0; top:0; bottom:0; background:rgba(106,168,255,.15); pointer-events:none }
+.cell .pg { position:absolute; left:0; top:0; bottom:0; background:rgba(106,168,255,.15); pointer-events:none } .cell .pg.w { background:rgba(240,180,70,.16) }
 .cell img { width:15px; height:15px; border-radius:2px; flex:none; position:relative }
 .cell .nm { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:12px; position:relative }
 .cell .pc { font-size:11px; color:#7d8594; position:relative; min-width:30px; text-align:right }
@@ -140,7 +140,7 @@ body.mini #pins { display:block } body.mini #pins .it { display:block; padding:3
   <span id="hiddenBar"></span>
   <span>접기 <span class="seg" id="gfilter"><button data-f="0">안 접음</button><button data-f="30">30%↓</button><button data-f="50">50%↓</button><button data-f="70">70%↓</button></span></span>
   <span class="seg" id="gsort"><button data-s="pct">진행률순</button><button data-s="orig">sions 순서</button></span>
-  <span><span class="go">조합</span> <span class="go hi">N단계</span> 누르면 게임에서 대신 조합 · <b class="ok">가능</b> 지금 바로 · <b class="warn">N단계</b> 중간 조합 N번 · <b>%</b> 하위 재료까지 진행률(위습 제외) · <span class="star">★</span> 추천 · <span class="pin">📌</span> 찜 · <b>?</b> 조합식</span>
+  <span><span class="go">조합</span> <span class="go hi">N단계</span> 누르면 게임에서 대신 조합 · <b class="ok">가능</b> 지금 바로 · <b class="warn">N단계</b> 중간 조합 N번 · <b>%</b> 하위 재료까지 진행률 <span class="warn">+%</span> 흔함선택위습으로 채울 몫 · <b class="warn">위습N</b> 위습 N개 씀 · <span class="star">★</span> 추천 · <span class="pin">📌</span> 찜 · <b>?</b> 조합식</span>
 </div>
 <div id="grid"></div>
 <div id="modal" class="ov" hidden><div class="box" id="mbox"></div></div>
@@ -151,7 +151,7 @@ body.mini #pins { display:block } body.mini #pins .it { display:block; padding:3
 // 목표치 기본값: sions 도우미 메모(풀이감 107%, 신풀깍 201) + 커뮤니티 공략(물딜 스턴 1~1.5, 마딜 1.5~2 / 이감 70~90)
 const DEFAULTS = { 물딜: { 이감: 107, 방깍: 201, 스턴: 1.5, 보잡: 1 }, 마딜: { 이감: 90, 방깍: 0, 스턴: 2, 보잡: 1 } };
 const CHECK = ['이감', '방깍', '스턴', '보잡'];
-const STATS = ['이감', '방깍', '스턴', '보잡', '마방깍', '공증', '공속', '마젠', '마증', '추가방깍', '단일스턴', '단일깍', '보스깍'];
+const STATS = ['이감', '방깍', '스턴', '보잡', '마방깍', '공증', '공속', '마젠', '마증', '추가방깍', '단일스턴', '단일깍', '보스깍', '발동이감'];
 const RANK = ['흔함', '안흔함', '특별함', '희귀함', '전설', '히든', '초월함', '제한됨', '불멸의', '영원함', '신비함', '왜곡', '변화', '세라핌', '랜덤유닛', '조합 아이템', '기타'];
 // 게임 속 등급 색 (맵 파일의 |cff 색 코드)
 const GCOLOR = { 흔함: '#4fd65a', 안흔함: '#a47ef2', 특별함: '#3f94ff', 희귀함: '#f062f0', 전설: '#ff5555', 히든: '#7d86ff', 초월함: '#00fa9a',
@@ -186,8 +186,8 @@ const WISPS = { '-1': '흔함선택위습', '-2': '안흔함위습', '-3': '특�
 function parse(name) {
   const once = {}, each = {};
   const add = (o, k, v) => { o[k] = (o[k] || 0) + v };
-  // 이감: ●이감(오라), 발동이감, 맵이감(맵 전체)
-  for (const m of name.matchAll(/(●?)(?:발동|발|맵)?이감\s*(\d+)/g)) add(m[1] ? once : each, '이감', +m[2]);
+  // 이감: ●이감(오라), 맵이감(맵 전체). 발동이감은 확률로 걸릴 때만 느려지니 이감 합계에 넣지 않고 따로 센다.
+  for (const m of name.matchAll(/(●?)(발동|발|맵)?이감\s*(\d+)/g)) add(m[1] ? once : each, /^발/.test(m[2] || '') ? '발동이감' : '이감', +m[3]);
   // 방깍: 깍/깎/방깍/발동깍/맵깎. 단일깍(한 마리에게만)·보스깍(보스에게만)·마방깍은 따로 센다.
   //       "오버깎(250) 짜야 최대 딜" 같은 설명은 수치가 아니다.
   for (const m of name.matchAll(/(마방|보스|단일|오버)?(?:맵|발동|방)?(?:깍|깎)\s*\(?(\d+)/g)) {
@@ -261,7 +261,8 @@ function simulate(id, pool) {
   }
   let got = 0;
   for (const [m, k] of items[id].recipes) for (let i = 0; i < k; i++) got += take(m, 1);
-  return { pct: got / buildScore(id), miss, steps, seq, wild };
+  // wpct = 그중 흔함선택위습으로 채운 몫. pct 는 위습까지 합친 값(100% = 지금 만들 수 있음)
+  return { pct: got / buildScore(id), wpct: Object.values(wild).reduce((a, b) => a + b, 0) / buildScore(id), miss, steps, seq, wild };
 }
 const progress = (id, base = avail) => pins.has(id) && pinRes[id] ? pinRes[id] : simulate(id, { ...base });
 
@@ -294,9 +295,12 @@ let hiddenGrades = new Set(store.get('hiddenGrades', [])), memos = store.get('me
 let zoom = store.get('zoom', 100), theme = store.get('theme', '어둡게'), feedsHigh = new Set(), gameSnap = null, hadGame = false;
 let excluded = new Set(store.get('excluded', []));   // 사용자가 추천에서 뺀 유닛
 const lackText = miss => Object.entries(miss).map(([m, k]) => nm(+m) + (k > 1 ? '×' + k : '')).join(', ');
-const stepLabel = pr => pr.steps ? pr.steps + '단계' : '위습으로';   // 100%인데 중간 조합 0번 = 흔함선택위습으로 채움
+const wildN = pr => Object.values(pr.wild || {}).reduce((a, b) => a + b, 0);   // 이 조합이 먹는 흔함선택위습 수
+const stepLabel = pr => [pr.steps ? pr.steps + '단계' : '', wildN(pr) ? '위습' + wildN(pr) : ''].filter(Boolean).join(' ');   // "5단계 위습3"
+// 진행률 글자: 가진 유닛으로 찬 몫과 위습으로 채울 몫을 나눠서 ("62% +위습38%"). 어느 조합이 위습을 덜 먹는지 보려고.
+const pctText = pr => Math.round((pr.pct - (pr.wpct || 0)) * 100) + '%' + (pr.wpct ? ` +위습${Math.round(pr.wpct * 100)}%` : '');
 const stateText = x => x.ready ? '<span class="ok">바로 가능</span>' : x.pr.pct >= 1 ? `<span class="warn">${stepLabel(x.pr)}</span>`
-  : `<span class="warn">${Math.round(x.pr.pct * 100)}%</span> <span class="dim">부족: ${esc(lackText(x.pr.miss))}</span>`;
+  : `<span class="warn">${pctText(x.pr)}</span> <span class="dim">부족: ${esc(lackText(x.pr.miss))}</span>`;
 // 7: 가진 전설 이상 유닛의 물뎀·마뎀 비율로 모드 결정 (높은 등급일수록 무겁게)
 function autoMode() {
   let phys = 0, mag = 0;
@@ -389,7 +393,7 @@ let lastSummary = '', lastPostAt = 0;
 function postSummary(warns, plan) {
   const text = h => h.replace(/<[^>]+>/g, '');
   const cur = statsOf(counts), t = targets[mode];
-  const st = x => x.ready ? '바로 가능' : x.pr.pct >= 1 ? stepLabel(x.pr) : Math.round(x.pr.pct * 100) + '%';
+  const st = x => x.ready ? '바로 가능' : x.pr.pct >= 1 ? stepLabel(x.pr) : pctText(x.pr);
   const top = order.filter(id => counts[id] && items[id].rank >= REC_FROM && items[id].rank < REC_TO).map(id => nm(id) + (counts[id] > 1 ? '×' + counts[id] : ''));
   // 등급별: 보유 / 지금 가능 / 가까운 것(50%↑ 또는 N단계)
   const grades = [], info = {};
@@ -411,7 +415,7 @@ function postSummary(warns, plan) {
       if (!it.recipes.length || it.lowest) continue;
       if (canCraft(it)) { ready.push(nm(it.id)); addInfo(it); continue; }
       const pr = progress(it.id);
-      if (pr.pct >= 0.5) { near.push([pr.pct, [nm(it.id), pr.pct >= 1 ? stepLabel(pr) : Math.round(pr.pct * 100) + '%'], it]); }
+      if (pr.pct >= 0.5) { near.push([pr.pct, [nm(it.id), pr.pct >= 1 ? stepLabel(pr) : pctText(pr)], it]); }
     }
     near.sort((x, y) => y[0] - x[0]);
     if (have.length || ready.length || near.length)
@@ -435,13 +439,13 @@ function postSummary(warns, plan) {
 
 // 추천 카드: 이름 / 등급 · 채워 주는 스탯 배지 / 진행률 막대 / 부족한 재료
 function recCard(x) {
-  const pc = Math.round(Math.min(x.pr.pct, 1) * 100), lack = lackText(x.pr.miss);
+  const pc = Math.round(Math.min(x.pr.pct, 1) * 100), wp = Math.round((x.pr.wpct || 0) * 100), lack = lackText(x.pr.miss);
   const st = x.pr.pct >= 1 && sendPlan(x.it.id) ? `<button class="go${x.ready ? '' : ' hi'}" data-chat="${x.it.id}" title="누르면 게임에서 대신 조합해요">${x.ready ? '조합' : stepLabel(x.pr)}</button>`
-    : x.ready ? '<b class="ok">바로 가능</b>' : x.pr.pct >= 1 ? `<b class="warn">${stepLabel(x.pr)}</b>` : `<b>${pc}%</b>`;
+    : x.ready ? '<b class="ok">바로 가능</b>' : x.pr.pct >= 1 ? `<b class="warn">${stepLabel(x.pr)}</b>` : `<b>${pctText(x.pr)}</b>`;
   return `<div class="rc it" data-id="${x.it.id}" title="${esc(x.it.name)}${lack ? '\n부족: ' + esc(lack) : ''}">` +
     `<div class="r1">${imgTag(x.it)}<span class="rn"><span class="star">★</span> ${esc(short(x.it.name))}</span><span class="rg" style="color:${gcolor(x.it.grade)}">${esc(x.it.grade.split(' ')[0])}</span><span class="rs">${st}</span><button class="rx" data-ex="${x.it.id}" title="이 유닛은 추천에서 빼기">✕</button></div>` +
     `<div class="r2">${x.gains.map(([k, d]) => `<span class="bd${d < 0 ? ' neg' : ''}">${k} ${d > 0 ? '+' : ''}${d}</span>`).join('')}</div>` +
-    `<div class="rbar"><div style="width:${pc}%"></div></div>` +
+    `<div class="rbar"><div style="width:${pc - wp}%"></div><div class="w" style="width:${wp}%"></div></div>` +
     (x.reason ? `<div class="r0" title="${esc(x.reason)}">💡 ${esc(x.reason)}</div>` : '') +
     `<div class="r3">${x.ready ? '<span class="ok">재료 다 있음</span>' : x.pr.pct >= 1 ? (wildText(x.pr) || `중간 조합 ${x.pr.steps}번이면 완성`) : '부족: ' + esc(lack) + (wispsNeeded(x.pr.miss) ? ` · 랜덤위습 약 ${wispsNeeded(x.pr.miss)}개` : '')}</div></div>`;
 }
@@ -470,7 +474,7 @@ function render() {
   if ((counts[0] || 0) >= 3) warns.push(`<span class="chip w">위습 ${counts[0]}개</span>`);
   for (const [w, label] of Object.entries(WISPS)) if (counts[w]) warns.push(`<span class="chip w" title="${w === '-1' ? (selWisp ? '흔함 대신 쓰는 걸로 계산 중' : '⚙ 설정에서 흔함 대신 쓰기를 켤 수 있어요') : ''}">${label} ${counts[w]}${w === '-1' && selWisp ? ' (계산 포함)' : ''}</span>`);
   if (!warns.length && Object.keys(counts).length) warns.push('<span class="chip g">목표치 다 채움</span>');
-  const extra = ['단일스턴', '단일깍', '보스깍', '마방깍', '공증', '공속', '마젠', '마증', '추가방깍'].filter(k => cur[k])
+  const extra = ['발동이감', '단일스턴', '단일깍', '보스깍', '마방깍', '공증', '공속', '마젠', '마증', '추가방깍'].filter(k => cur[k])
     .map(k => k === '단일스턴' ? `단일스턴 ${cur[k]}마리` : `${k === '추가방깍' ? '보스·스토리 추가 방깍' : k} ${+cur[k].toFixed(2)}`).join(' · ');
   $('summary').innerHTML = sum + `<div>${warns.join(' ')}</div>` + (extra ? `<div class="extra">${extra}</div>` : '');
 
@@ -555,24 +559,24 @@ function renderGrid() {
       const craft = it.recipes.length && !it.lowest, pinned = pins.has(it.id);
       const ready = craft && canCraft(it, pinned ? counts : avail);
       const pr = craft ? progress(it.id) : null, pc = pr ? Math.round(pr.pct * 100) : 0;
-      const tip = esc(it.name) + (it.cat ? ` [${it.cat}]` : '') + (craft ? `\n\n진행률 ${pc}%` + (pc >= 100 && !ready ? ` (중간 조합 ${pr.steps}번)` : '') +
+      const tip = esc(it.name) + (it.cat ? ` [${it.cat}]` : '') + (craft ? `\n\n진행률 ${pctText(pr)}` + (pc >= 100 && !ready ? ` (중간 조합 ${pr.steps}번)` : '') +
         '\n재료\n' + it.recipes.map(([m, k]) => `${(counts[m] || 0) >= k ? '✔' : '✘'} ${nm(m)} ${Math.min(counts[m] || 0, k)}/${k}`).join('\n') +
         (Object.keys(pr.miss).length ? `\n\n부족한 재료 (최하위)\n${lackText(pr.miss)}` : '') +
         (specialLack(pr).length ? `\n\n⚠ 특수 재료 필요 (조합으로 못 만듦): ${specialLack(pr).join(', ')}` : '') : '');
       const plan = craft && pc >= 100 && sendPlan(it.id);
       const label = !craft ? '' : plan ? `<span class="pc go${ready ? '' : ' hi'}" data-chat="${it.id}" title="누르면 게임에서 대신 조합해요">${ready ? '조합' : stepLabel(pr)}</span>`
-        : ready ? '<span class="pc full">가능</span>' : pc >= 100 ? `<span class="pc hi">${stepLabel(pr)}</span>` : `<span class="pc">${pc}%</span>`;
+        : ready ? '<span class="pc full">가능</span>' : pc >= 100 ? `<span class="pc hi">${stepLabel(pr)}</span>` : `<span class="pc">${Math.round((pr.pct - pr.wpct) * 100)}%${pr.wpct ? `<span class="warn">+${Math.round(pr.wpct * 100)}%</span>` : ''}</span>`;
       const memo = memos[it.id] ? `<span title="${esc(memos[it.id])}">📝</span>` : '';
       const name = memo + (query ? esc(it.name).replace(new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'), '<mark>$&</mark>') : esc(it.name));
-      rows.push({ idx, sort: (pr ? pr.pct : 0) + (ready ? 1 : 0), steps: pr ? pr.steps : 0, n,
+      rows.push({ idx, sort: (pr ? pr.pct : 0) + (ready ? 1 : 0), steps: pr ? pr.steps : 0, wn: pr ? pr.wpct : 0, n,
         keep: query || n > 0 || ready || pinned || recIds.has(it.id) || pc >= gfilter,
         html: `<div class="cell${n ? ' have' : ''}${ready ? ' ready' : ''}${flash[it.id] > now ? ' flash' : ''}" title="${tip}">` +
-          (pr && pr.pct > 0 && pr.pct < 1 ? `<div class="pg" style="width:${pr.pct * 100}%"></div>` : '') + imgTag(it) +
+          (pr && pr.pct > 0 && pr.pct < 1 ? `<div class="pg" style="width:${(pr.pct - pr.wpct) * 100}%"></div>` + (pr.wpct ? `<div class="pg w" style="left:${(pr.pct - pr.wpct) * 100}%;width:${pr.wpct * 100}%"></div>` : '') : '') + imgTag(it) +
           `<span class="nm">${pinned ? '<span class="pin">📌</span>' : ''}${recIds.has(it.id) ? '<span class="star">★</span>' : ''}${name}</span>${label}` +
           `<span class="ct">${n || ''}</span><button class="q" data-id="${it.id}" title="조합식">?</button></div>` });
     });
     if (!rows.length) continue;
-    if (gsort === 'pct') rows.sort((a, b) => (b.sort || 0) - (a.sort || 0) || (a.steps || 0) - (b.steps || 0) || (b.n || 0) - (a.n || 0) || a.idx - b.idx);
+    if (gsort === 'pct') rows.sort((a, b) => (b.sort || 0) - (a.sort || 0) || (a.wn || 0) - (b.wn || 0) || (a.steps || 0) - (b.steps || 0) || (b.n || 0) - (a.n || 0) || a.idx - b.idx);
     const open = !gfilter || query || openGroups.has(g.name), kept = rows.filter(r => r.keep), hid = rows.length - kept.length;
     const gc = gcolor(g.name);
     const cells = (open ? rows : kept).map(r => r.html);
@@ -757,7 +761,7 @@ function openRecipe(id, push = true) {
     (craft && pinned ? `<button class="ibtn" data-act="autopin" title="재료가 다 모이면 버튼을 안 눌러도 게임에서 조합해요. 만들고 나면 찜이 풀려요">${autoPins.has(id) ? '⚡ 자동 조합 끄기' : '⚡ 모이면 자동 조합'}</button>` : '') +
     `<span class="${n ? 'ok' : 'dim'}">보유 ${n}</span><button class="ibtn" data-act="close">✕</button></div>` +
     (it.descr ? `<div class="sec">${esc(it.descr)}</div>` : '') +
-    (craft ? `<div class="sec"><h4>조합법 · 진행률 ${Math.round(pr.pct * 100)}%${ready ? ' · <span class="ok">지금 조합 가능</span>' : ''}${pinned ? ' · 📌 재료 예약 중' : ''}</h4>` +
+    (craft ? `<div class="sec"><h4>조합법 · 진행률 ${pctText(pr)}${ready ? ' · <span class="ok">지금 조합 가능</span>' : ''}${pinned ? ' · 📌 재료 예약 중' : ''}</h4>` +
       `<div class="mats">${it.recipes.map(([m, k]) => card(m, k)).join('')}</div></div>` : '') +
     (steps && !ready ? `<div class="sec"><h4>${pr.pct >= 1 ? '조합 순서' : '지금 할 수 있는 중간 조합'}</h4><ol class="steps">${steps}</ol></div>` : '') +
     (pr && wildText(pr) ? `<div class="sec warn">${esc(wildText(pr))}</div>` : '') +
