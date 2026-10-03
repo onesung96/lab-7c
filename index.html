@@ -141,7 +141,7 @@ body.mini #pins { display:block } body.mini #pins .it { display:block; padding:3
 <div id="toolbar">
   <span id="hiddenBar"></span>
   <span>접기 <span class="seg" id="gfilter"><button data-f="0">안 접음</button><button data-f="30">30%↓</button><button data-f="50">50%↓</button><button data-f="70">70%↓</button></span></span>
-  <span class="seg" id="gsort"><button data-s="pct">진행률순</button><button data-s="orig">sions 순서</button></span>
+  <span class="seg" id="gsort"><button data-s="pct" title="바로 가능 → 지금 만들 수 있는 것(위습 적게 먹는 순) → 나머지는 위습을 빼고 가진 유닛만으로 찬 순">진행률순</button><button data-s="orig">sions 순서</button></span>
   <span><span class="go">조합</span> <span class="go hi">N단계</span> 누르면 게임에서 대신 조합 · <b class="ok">가능</b> 지금 바로 · <b class="warn">N단계</b> 중간 조합 N번 · <b>%</b> 하위 재료까지 진행률 <span class="warn">+%</span> 흔함선택위습으로 채울 몫 · <b class="warn">위습N</b> 위습 N개 씀 · <span class="dt p">물</span> 물딜 <span class="dt m">마</span> 마딜 (전설 이상) · <span class="star">★</span> 추천 · <span class="pin">📌</span> 찜 · <b>?</b> 조합식</span>
 </div>
 <div id="grid"></div>
@@ -592,7 +592,7 @@ function renderGrid() {
         : ready ? '<span class="pc full">가능</span>' : pc >= 100 ? `<span class="pc hi">${stepLabel(pr)}</span>` : `<span class="pc">${Math.round((pr.pct - pr.wpct) * 100)}%${pr.wpct ? `<span class="warn">+${Math.round(pr.wpct * 100)}%</span>` : ''}</span>`;
       const memo = memos[it.id] ? `<span title="${esc(memos[it.id])}">📝</span>` : '';
       const name = memo + (query ? esc(it.name).replace(new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'), '<mark>$&</mark>') : esc(it.name));
-      rows.push({ idx, sort: (pr ? pr.pct : 0) + (ready ? 1 : 0), steps: pr ? pr.steps : 0, wn: pr ? pr.wpct : 0, n,
+      rows.push({ idx, sort: ready ? 3 : pr && pr.pct >= 1 ? 2 : pr ? pr.pct - pr.wpct : 0, steps: pr ? pr.steps : 0, wn: pr ? wildN(pr) : 0, n,
         keep: query || n > 0 || ready || pinned || recIds.has(it.id) || pc >= gfilter,
         html: `<div class="cell${n ? ' have' : ''}${ready ? ' ready' : ''}${flash[it.id] > now ? ' flash' : ''}" title="${tip}">` +
           (pr && pr.pct > 0 && pr.pct < 1 ? `<div class="pg" style="width:${(pr.pct - pr.wpct) * 100}%"></div>` + (pr.wpct ? `<div class="pg w" style="left:${(pr.pct - pr.wpct) * 100}%;width:${pr.wpct * 100}%"></div>` : '') : '') + imgTag(it) + dmgTag(it) +
