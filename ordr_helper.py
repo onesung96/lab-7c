@@ -11,7 +11,7 @@
 import collections, ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.7.11'
+VERSION = '1.7.12'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -75,7 +75,7 @@ def apply_mapping(mp):
 
 state = {'status': '워크3 기다리는 중', 'counts': {}, 'players': {}, 'ts': 0, 'scan': 0,
          'owner': cfg['owner'], 'auto': cfg['auto'], 'managed': [], 'notice': '', 'data_ver': 1,
-         'map_version': cfg['map_version'], 'big_key': cfg.get('big_key', '`'), 'big_alpha': cfg.get('big_alpha', 100), 'version': VERSION, 'frozen': FROZEN, 'update': None, 'startup': False}
+         'map_version': cfg['map_version'], 'big_key': cfg.get('big_key', '마우스 옆버튼'), 'big_alpha': cfg.get('big_alpha', 100), 'version': VERSION, 'frozen': FROZEN, 'update': None, 'startup': False}
 apply_mapping(json.load(open(res_or_local('mapping.json'), encoding='utf-8')))
 COMBOS = {}   # 버튼으로 조합하는 유닛: {결과 sions id: [[버튼을 가진 유닛 코드, 단축키], ...]}
 
@@ -1734,10 +1734,10 @@ BIG_KEYS = {'`': 0xC0, 'F1': 0x70, 'F4': 0x73, 'F5': 0x74, 'F7': 0x76, 'Insert':
 
 
 def hotkey_loop():
-    """큰 창 여닫기 키(기본 ` : 숫자 1 왼쪽). 게임이나 큰 창이 앞에 있을 때만 (키 상태만 본다, 키보드 후킹 아님)."""
+    """큰 창 여닫기 키(기본 마우스 옆버튼). 게임이나 큰 창이 앞에 있을 때만 (키 상태만 본다, 키보드 후킹 아님)."""
     was = False
     while True:
-        down = bool(u32.GetAsyncKeyState(BIG_KEYS.get(cfg.get('big_key'), 0xC0)) & 0x8000)
+        down = bool(u32.GetAsyncKeyState(BIG_KEYS.get(cfg.get('big_key'), 0x05)) & 0x8000)
         if down and not was:
             buf = ctypes.create_unicode_buffer(64)
             u32.GetWindowTextW(u32.GetForegroundWindow(), buf, 64)
@@ -1893,7 +1893,7 @@ if __name__ == '__main__':
                          lambda: f"원랜디 도우미 {VERSION} · {state['status']}" + (f" · 내 유닛 {units()}" if state['players'] else ''),
                          [('도우미 페이지 열기', open_page),
                           ('게임 위에 띄우기', spawn_overlay),
-                          ('게임 위 큰 창 (` 키)', toggle_big),
+                          ('게임 위 큰 창 여닫기', toggle_big),
                           ('업데이트 확인', tray_update),
                           ('-', None),
                           (lambda: f"{state['status']}" + (f" · {state['owner'] + 1}번 슬롯 · 유닛 {units()}" if state['players'] else ''), None),
