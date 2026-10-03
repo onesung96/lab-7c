@@ -151,9 +151,9 @@ body.mini #pins { display:block } body.mini #pins .it { display:block; padding:3
 <script>
 // ───────── 설정값 ─────────
 // 목표치 기본값: sions 도우미 메모(풀이감 107%, 신풀깍 201) + 커뮤니티 공략(물딜 스턴 1~1.5, 마딜 1.5~2 / 이감 70~90)
-const DEFAULTS = { 물딜: { 이감: 107, 방깍: 201, 스턴: 1.5, 보잡: 1 }, 마딜: { 이감: 90, 방깍: 0, 스턴: 2, 보잡: 1 } };
-const CHECK = ['이감', '방깍', '스턴', '보잡'];
-const STATS = ['이감', '방깍', '스턴', '보잡', '마방깍', '공증', '공속', '마젠', '마증', '추가방깍', '단일스턴', '단일깍', '보스깍', '발동이감'];
+const DEFAULTS = { 물딜: { 이감: 107, 방깍: 201, 스턴: 1.5, 보잡: 1, 끝딜: 1 }, 마딜: { 이감: 90, 방깍: 0, 스턴: 2, 보잡: 1, 끝딜: 1 } };
+const CHECK = ['이감', '방깍', '스턴', '보잡', '끝딜'];
+const STATS = ['이감', '방깍', '스턴', '보잡', '끝딜', '마방깍', '공증', '공속', '마젠', '마증', '추가방깍', '단일스턴', '단일깍', '보스깍', '발동이감'];
 const RANK = ['흔함', '안흔함', '특별함', '희귀함', '전설', '히든', '초월함', '제한됨', '불멸의', '영원함', '신비함', '왜곡', '변화', '세라핌', '랜덤유닛', '조합 아이템', '기타'];
 // 게임 속 등급 색 (맵 파일의 |cff 색 코드)
 const GCOLOR = { 흔함: '#4fd65a', 안흔함: '#a47ef2', 특별함: '#3f94ff', 희귀함: '#f062f0', 전설: '#ff5555', 히든: '#7d86ff', 초월함: '#00fa9a',
@@ -206,6 +206,7 @@ function parse(name) {
   if (st) add(each, '스턴', +st[1]);
   if (/단일\s*[\d.]*\s*스턴|\d단일/.test(name)) add(each, '단일스턴', 1);
   if (/보잡|보스/.test(name)) add(each, '보잡', 1);   // 보스잡기: 광보잡, 보스현퍼, 보스깍, 보스&광폭 …
+  if (/끝딜/.test(name)) add(each, '끝딜', 1);        // 끝딜: 마리 수만 센다 (한 마리는 있어야 끝까지 깬다)
   for (const [k, re] of [['공증', /공증\s*(\d+)/], ['공속', /공속\s*(\d+)/], ['마젠', /마젠\s*(\d+(?:\.\d+)?)/], ['마증', /마(?:뎀)?증\s*(\d+)/]]) {
     const m = name.match(re); if (m) add(each, k, +m[1]);
   }
@@ -357,6 +358,7 @@ function recReason(x, cur) {
   const t = targets[mode], g = Object.fromEntries(x.gains);
   let why;
   if (g.보잡 > 0 && cur.보잡 < 1) why = '보스잡기 유닛이 없어서 우선';
+  else if (g.끝딜 > 0 && cur.끝딜 < 1) why = '끝딜 유닛이 없어서 우선';
   else {
     const best = CHECK.filter(k => g[k] > 0 && t[k]).sort((a, b) => g[b] / t[b] - g[a] / t[a])[0];
     why = best ? `${best} ${+(t[best] - cur[best]).toFixed(2)} 부족 중 ${g[best]} 채움` : '';
@@ -474,7 +476,7 @@ function render() {
     const r = Math.min(cur[k] / t[k], 1), cls = r >= 1 ? 'ok' : r >= 0.6 ? 'warn' : 'bad';
     sum += `<div class="sb"><div class="top"><span>${k}</span><span class="${cls}">${+cur[k].toFixed(2)} / ${t[k]}</span></div>` +
            `<div class="track"><div class="fill" style="width:${r * 100}%;background:var(--${cls})"></div></div></div>`;
-    if (r < 1) warns.push(k === '보잡' ? '<span class="chip">보스잡기 유닛 없음</span>' : `<span class="chip${cls === 'warn' ? ' w' : ''}">${k} ${+(t[k] - cur[k]).toFixed(2)} 부족</span>`);
+    if (r < 1) warns.push(k === '보잡' ? '<span class="chip">보스잡기 유닛 없음</span>' : k === '끝딜' ? '<span class="chip">끝딜 유닛 없음</span>' : `<span class="chip${cls === 'warn' ? ' w' : ''}">${k} ${+(t[k] - cur[k]).toFixed(2)} 부족</span>`);
   }
   if ((counts[0] || 0) >= 3) warns.push(`<span class="chip w">위습 ${counts[0]}개</span>`);
   for (const [w, label] of Object.entries(WISPS)) if (counts[w]) warns.push(`<span class="chip w" title="${w === '-1' ? (selWisp ? '흔함 대신 쓰는 걸로 계산 중' : '⚙ 설정에서 흔함 대신 쓰기를 켤 수 있어요') : ''}">${label} ${counts[w]}${w === '-1' && selWisp ? ' (계산 포함)' : ''}</span>`);
@@ -495,7 +497,10 @@ function render() {
     const ready = canCraft(it);
     recList.push({ it, pr, ready, why: r.why, gains: r.gains, reason: '', s: r.s * (0.4 + 0.6 * Math.min(pr.pct, 1)) - pr.steps * 0.08 + (ready ? 0.3 : 0) + it.tier * 0.02 });
   }
-  recList.sort((a, b) => b.s - a.s).splice(8);
+  // 보잡·끝딜은 한 마리면 되니, 그것만 채워 주는 추천은 종류마다 둘까지 (이감·방깍 추천이 밀려나지 않게)
+  const only = {};
+  recList = recList.sort((a, b) => b.s - a.s).filter(x => { const k = x.gains.length === 1 && ['보잡', '끝딜'].includes(x.gains[0][0]) && x.gains[0][0]; return !k || (only[k] = (only[k] || 0) + 1) <= 2; });
+  recList.splice(8);
   for (const x of recList) x.reason = recReason(x, cur);
   const want = mode === '물딜' ? '물뎀' : '마뎀', nearAll = [];
   for (const id of order) {   // 진행률 60%↑ 전설 이상 전부 (딜러 추천·위습 우선순위용)
@@ -855,7 +860,7 @@ function openSettings() {
   $('sbox').innerHTML = `<div class="mh"><b>설정</b><button class="ibtn" data-act="close">✕</button></div>` +
     `<div class="sec"><h4>목표치 (0 이면 안 봄)</h4><table class="set"><tr><th></th>${CHECK.map(k => `<th>${k}</th>`).join('')}</tr>` +
     ['물딜', '마딜'].map(m => `<tr><td>${m}</td>${CHECK.map(k => `<td><input type="number" step="${k === '스턴' ? 0.1 : 1}" data-m="${m}" data-k="${k}" value="${targets[m][k]}"></td>`).join('')}</tr>`).join('') +
-    `</table><div class="dim" style="margin-top:6px">기본값: 풀이감 107, 신풀깍 201(sions 메모) · 스턴 물딜 1.5 / 마딜 2 · 보잡 1마리</div>` +
+    `</table><div class="dim" style="margin-top:6px">기본값: 풀이감 107, 신풀깍 201(sions 메모) · 스턴 물딜 1.5 / 마딜 2 · 보잡 1마리 · 끝딜 1마리</div>` +
     `<button class="ibtn" data-act="reset" style="margin-top:8px">기본값으로</button></div>` +
     `<div class="sec"><label><input type="checkbox" id="setNotify" ${notify ? 'checked' : ''}> 뽑기·조합 가능 알림 띄우기</label><br>` +
     `<label><input type="checkbox" id="setSound" ${sound ? 'checked' : ''}> 소리 알림 (전설 이상 조합 가능 / 보잡 확보 / 목표 달성)</label>` +
@@ -905,7 +910,7 @@ document.addEventListener('click', e => {
     navigator.clipboard.writeText(code).then(() => toast('설정 코드를 복사했어요. 친구에게 붙여넣기 해 주세요'), () => prompt('이 코드를 복사하세요', code)); return; }
   if (act === 'importCfg') { const code = prompt('받은 설정 코드를 붙여넣으세요'); if (!code) return;
     try { const c = JSON.parse(decodeURIComponent(escape(atob(code.trim()))));
-      if (c.targets) { targets = c.targets; store.set('targets', targets); } if (c.modePref) { modePref = c.modePref; store.set('modePref', modePref); }
+      if (c.targets) { targets = { 물딜: { ...DEFAULTS.물딜, ...c.targets.물딜 }, 마딜: { ...DEFAULTS.마딜, ...c.targets.마딜 } }; store.set('targets', targets); } if (c.modePref) { modePref = c.modePref; store.set('modePref', modePref); }
       pins = new Set(c.pins || []); store.set('pins', [...pins]); excluded = new Set(c.excluded || []); store.set('excluded', [...excluded]);
       hiddenGrades = new Set(c.hiddenGrades || []); store.set('hiddenGrades', [...hiddenGrades]); memos = c.memos || {}; store.set('memos', memos);
       toast('설정을 가져왔어요', 'ok'); render(); openSettings(); } catch { toast('코드가 올바르지 않아요'); } return; }
@@ -967,6 +972,7 @@ async function init() {
       items[it.id] = { id: it.id, name: it.name.replace(/ /g, ' '), grade: g.name, tier: gi, rank: rank(g), cat, recipes: it.recipes,
                        lowest: !!it.lowest, descr: it.descr || '', img: it.img || '', stat: parse(it.name) };
       const bonus = [...(it.descr || '').matchAll(/(?<!마)(?:방)?(?:깍|깎)\s*(\d+)|(\d+)\s*(?:방)?(?:깍|깎)/g)].reduce((a, m) => a + +(m[1] || m[2]), 0);
+      if (cat === '끝딜' || /끝딜/.test(it.descr || '')) items[it.id].stat.each['끝딜'] = 1;   // 이름엔 없고 설명·분류에만 적힌 끝딜
       if (bonus) items[it.id].stat.each['추가방깍'] = bonus;   // 보스·스토리에만 붙는 방깍: 목표치 계산엔 안 넣고 따로 보여 줌
       order.push(it.id);
     }
