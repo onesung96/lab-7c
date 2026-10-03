@@ -11,7 +11,7 @@
 import collections, ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.7.19'
+VERSION = '1.7.20'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -75,7 +75,7 @@ def apply_mapping(mp):
 
 state = {'status': '워크3 기다리는 중', 'counts': {}, 'players': {}, 'ts': 0, 'scan': 0,
          'owner': cfg['owner'], 'auto': cfg['auto'], 'managed': [], 'notice': '', 'data_ver': 1,
-         'map_version': cfg['map_version'], 'big_key': cfg.get('big_key', '마우스 옆버튼'), 'big_alpha': cfg.get('big_alpha', 100), 'version': VERSION, 'frozen': FROZEN, 'update': None, 'startup': False, 'soon': None}
+         'map_version': cfg['map_version'], 'big_key': cfg.get('big_key', '마우스 옆버튼'), 'big_alpha': cfg.get('big_alpha', 100), 'stay': cfg.get('stay', True), 'version': VERSION, 'frozen': FROZEN, 'update': None, 'startup': False, 'soon': None}
 apply_mapping(json.load(open(res_or_local('mapping.json'), encoding='utf-8')))
 COMBOS = {}   # 버튼으로 조합하는 유닛: {결과 sions id: [[버튼을 가진 유닛 코드, 단축키], ...]}
 
@@ -1194,7 +1194,7 @@ def _steps(g, steps):
         if big:
             big_show(big, True)
         gh, r = game_window(g.pid), W.RECT()
-        if prev and prev != gh and prev != big and prev != u32.GetForegroundWindow():   # 큰 창에서 눌렀으면 초점은 게임에 둔다
+        if prev and prev != gh and prev != big and prev != u32.GetForegroundWindow() and not cfg.get('stay', True):   # 큰 창에서 눌렀으면 초점은 게임에 둔다
             front(prev)
             for _ in range(10):
                 if u32.GetForegroundWindow() != gh:
@@ -1810,6 +1810,10 @@ class Handler(BaseHTTPRequestHandler):
             h = big_window()
             if big_shown(h):
                 big_show(h, True)
+            self._send(200, b'ok', 'text/plain')
+        elif path == '/stay' and q in ('v=0', 'v=1'):   # 조합이 끝난 뒤 게임 창에 남을지(1), 누르던 창으로 돌아갈지(0)
+            cfg['stay'] = state['stay'] = q == 'v=1'
+            save_cfg()
             self._send(200, b'ok', 'text/plain')
         elif path == '/bigkey' and q.startswith('k='):   # 큰 창 여닫는 키 바꾸기
             from urllib.parse import unquote
