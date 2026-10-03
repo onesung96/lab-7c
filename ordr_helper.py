@@ -11,7 +11,7 @@
 import collections, ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.7.10'
+VERSION = '1.7.11'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -1127,9 +1127,12 @@ def _steps(g, steps):
         me = g.local_slot()
         if me is None:
             return '내 플레이어를 못 찾았어요 (게임이 업데이트된 것 같아요)'
+        # Esc 를 '누르고 있을 때'만 보면 단계 사이의 짧은 순간에 맞춰 눌러야 멈춘다: 지난 확인 뒤로 한 번이라도 눌렸으면 멈춘다
+        esc = lambda: u32.GetAsyncKeyState(0x1B) & 0x8001
+        esc()                                    # 시작 전에 눌렸던 기록은 지운다
         for i, (sid, cmd) in enumerate(steps):
             t0 = time.time()
-            if u32.GetAsyncKeyState(0x1B) & 0x8000:
+            if esc():
                 return f'Esc 로 멈췄어요 ({i}/{len(steps)}단계까지 함)'
             before = mine_of(g, me, sid)
             wisp = cmd == '@wisp'                # 흔함선택위습을 그 흔함의 자리로 보내는 단계
@@ -1144,6 +1147,8 @@ def _steps(g, steps):
             # 결과 유닛이 생기거나 누른 재료가 사라질 때까지 (최대 3초, 변화는 13초, 위습은 걸어가야 해서 12초)
             for k in range(0 if done else 430 if slow else 400 if wisp else 100):
                 time.sleep(0.03)
+                if esc():                        # 기다리는 중에도 멈출 수 있게 (위습·변화는 10초 넘게 기다린다)
+                    return f'Esc 로 멈췄어요 ({i + 1}/{len(steps)}단계까지 함)'
                 if (not chat and not slow and not ui.unit(ui.last)) or (k % 3 == 2 and mine_of(g, me, sid) - before):
                     done = True
                     break
