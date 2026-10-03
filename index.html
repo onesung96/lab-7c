@@ -179,7 +179,7 @@ let targets = { 물딜: { ...DEFAULTS.물딜, ...savedT.물딜 }, 마딜: { ...D
 let pins = new Set(store.get('pins', []));
 let gfilter = +store.get('gfilter', 50) || 0, gsort = store.get('gsort', 'pct'), notify = store.get('notify', true);
 let openGroups = new Set(), query = '', prevCounts = null, prevReady = null, prevBoss = null, flash = {};
-let sound = store.get('sound', true), auraOnce = store.get('auraOnce', true), selWisp = store.get('selWisp', true);   // 기본 켬: 위습을 그 흔함 자리로 보내는 것까지 대신 해 주므로
+let sound = store.get('sound', true), auraOnce = store.get('auraOnce', true), legendOnly = store.get('legendOnly', true), selWisp = store.get('selWisp', true);   // 기본 켬: 위습을 그 흔함 자리로 보내는 것까지 대신 해 주므로
 let tone = store.get('tone', '띵'), vol = store.get('vol', 60), osNotify = store.get('osNotify', false), prevStats = null;
 const WISPS = { '-1': '흔함선택위습', '-2': '안흔함위습', '-3': '특별위습', '-4': '희귀위습', '-5': '초월위습' };
 
@@ -228,7 +228,7 @@ const matches = name => { if (!query) return true; const n = name.toLowerCase().
 function statsOf(cnt) {
   const t = Object.fromEntries(STATS.map(k => [k, 0]));
   for (const [id, n] of Object.entries(cnt)) {
-    const it = items[id]; if (!it || n <= 0) continue;
+    const it = items[id]; if (!it || n <= 0 || (legendOnly && it.rank < REC_FROM)) continue;   // 희귀 이하는 결국 재료로 사라진다
     for (const [k, v] of Object.entries(it.stat.once)) t[k] += auraOnce ? v : v * n;
     for (const [k, v] of Object.entries(it.stat.each)) t[k] += v * n;
   }
@@ -468,8 +468,8 @@ const dmgTag = it => it.cat === '물뎀' ? '<span class="dt p" title="물리 딜
 const imgTag = (it, cls = '') => it.img ? `<img class="${cls}" src="${THUMB + it.img}" referrerpolicy="no-referrer" loading="lazy" onerror="this.style.visibility='hidden'">` : `<img class="${cls}" style="visibility:hidden">`;
 
 function render() {
+  mode = modePref === '자동' ? autoMode() : modePref;   // 목표치를 꺼내기 전에 정한다: 뒤에 두면 물딜↔마딜이 바뀐 첫 화면에 예전 목표치가 나온다
   const t = targets[mode], cur = statsOf(counts);
-  mode = modePref === '자동' ? autoMode() : modePref;
   document.querySelectorAll('#mode button').forEach(b => { b.classList.toggle('on', b.dataset.m === modePref); if (b.dataset.m === '자동') b.textContent = modePref === '자동' ? `자동(${mode})` : '자동'; });
 
   // 찜: 찜한 유닛 재료를 먼저 예약하고, 남은 것(avail)으로 나머지를 계산
@@ -878,6 +878,7 @@ function openSettings() {
     ` 음량 <input type="range" id="setVol" min="5" max="100" value="${vol}" style="vertical-align:middle"> <button class="ibtn" data-act="testSound">들어보기</button><br>` +
     `<label><input type="checkbox" id="setOs" ${osNotify ? 'checked' : ''}> 윈도우 알림 (게임 중 페이지가 안 보일 때 오른쪽 아래에 표시)</label><br>` +
     `<label><input type="checkbox" id="setAura" ${auraOnce ? 'checked' : ''}> ● 붙은 수치는 여러 마리여도 한 번만 계산 (끄면 마리 수만큼 더함)</label><br>` +
+    `<label><input type="checkbox" id="setLegend" ${legendOnly ? 'checked' : ''}> 이감·방깍·스턴 합계는 전설 이상 유닛만 계산 (끄면 희귀·특별함 수치도 더함)</label><br>` +
     `<label><input type="checkbox" id="setWisp" ${selWisp ? 'checked' : ''}> 흔함선택위습을 흔함 대신 쓰기 (진행률에 넣고, 조합 버튼이 위습도 대신 보내요)</label></div>` +
     `<div class="sec"><label><input type="checkbox" id="setStartup" ${srv.startup ? 'checked' : ''}> 윈도우 켤 때 자동 실행 (창 없이 뒤에서)</label>` +
     ` <button class="ibtn" data-act="quit" style="float:right">프로그램 끄기</button>` +
@@ -953,6 +954,7 @@ document.addEventListener('change', e => {
   if (e.target.id === 'setBigAlpha') { $('bigAlphaV').textContent = e.target.value + '%'; srv.big_alpha = +e.target.value; fetch('/bigalpha?v=' + e.target.value); }
   if (e.target.id === 'setBigKey') fetch('/bigkey?k=' + encodeURIComponent(e.target.value)).then(() => { srv.big_key = e.target.value; toast('큰 창 여닫는 키: ' + e.target.value); });
   if (e.target.id === 'setStartup') fetch('/startup?on=' + (e.target.checked ? 1 : 0)).then(r => r.json()).then(j => { srv.startup = j.startup; toast(j.startup ? '윈도우 켤 때 자동으로 실행돼요' : '자동 실행을 껐어요'); });
+  if (e.target.id === 'setLegend') { legendOnly = e.target.checked; store.set('legendOnly', legendOnly); render(); }
   if (e.target.id === 'setAura') { auraOnce = e.target.checked; store.set('auraOnce', auraOnce); render(); }
   if (e.target.id === 'setWisp') { selWisp = e.target.checked; store.set('selWisp', selWisp); render(); }
 });
