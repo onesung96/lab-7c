@@ -11,7 +11,7 @@
 import collections, ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.7.25'
+VERSION = '1.7.26'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -1138,8 +1138,19 @@ def game_steps(steps):
         chat_lock.release()
 
 
+class Halt(Exception):
+    """조합 도중 Esc 를 눌렀다."""
+
+
+def halted():
+    """Esc 가 눌려 있거나 지난 확인 뒤로 한 번이라도 눌렸으면 Halt 를 던진다 (짧게 톡 눌러도 잡힌다).
+    마우스를 옮기고 누르는 자리마다 불러서, 유닛을 찾는 중이든 걸어가길 기다리는 중이든 바로 멈춘다."""
+    if u32.GetAsyncKeyState(0x1B) & 0x8001:
+        raise Halt
+
+
 def _steps(g, steps):
-    prev, old, ui, cam0, good = u32.GetForegroundWindow(), W.POINT(), None, None, False
+    prev, old, ui, cam0, good, halt, at = u32.GetForegroundWindow(), W.POINT(), None, None, False, False, 0
     big = big_window()
     big = big if big_shown(big) else None   # 큰 창이 게임 화면을 가리니 조합하는 동안 감춘다
     if big:
@@ -1149,13 +1160,10 @@ def _steps(g, steps):
         me = g.local_slot()
         if me is None:
             return '내 플레이어를 못 찾았어요 (게임이 업데이트된 것 같아요)'
-        # Esc 를 '누르고 있을 때'만 보면 단계 사이의 짧은 순간에 맞춰 눌러야 멈춘다: 지난 확인 뒤로 한 번이라도 눌렸으면 멈춘다
-        esc = lambda: u32.GetAsyncKeyState(0x1B) & 0x8001
-        esc()                                    # 시작 전에 눌렸던 기록은 지운다
+        u32.GetAsyncKeyState(0x1B)               # 시작 전에 눌렸던 Esc 기록은 지운다
         for i, (sid, cmd) in enumerate(steps):
-            t0 = time.time()
-            if esc():
-                return f'Esc 로 멈췄어요 ({i}/{len(steps)}단계까지 함)'
+            t0, at = time.time(), i
+            halted()
             before = mine_of(g, me, sid)
             wisp = cmd == '@wisp'                # 흔함선택위습을 그 흔함의 자리로 보내는 단계
             chat = bool(cmd) and not wisp
@@ -1163,14 +1171,13 @@ def _steps(g, steps):
                 ui = Clicker(g, me)
                 cam0 = cam0 or (not ui.err and ui.cam()) or None   # 처음 보던 곳: 끝나면 돌아온다
             msg = _chat(cmd) if chat else ui.err or (ui.wisp(sid) if wisp else ui.combine(COMBOS[sid]))
-            t1 = time.time()
+            t1, at = time.time(), i + (msg == 'ok')   # 단축키까지 눌렀으면 이 단계는 한 것으로 센다
             slow = not cmd and any(k == 'B' for _, k, *_ in COMBOS[sid])   # 변화는 시전에 10초가 걸린다
             done = msg != 'ok'
             # 결과 유닛이 생기거나 누른 재료가 사라질 때까지 (최대 3초, 변화는 13초, 위습은 걸어가야 해서 12초)
             for k in range(0 if done else 430 if slow else 400 if wisp else 100):
                 time.sleep(0.03)
-                if esc():                        # 기다리는 중에도 멈출 수 있게 (위습·변화는 10초 넘게 기다린다)
-                    return f'Esc 로 멈췄어요 ({i + 1}/{len(steps)}단계까지 함)'
+                halted()                         # 기다리는 중에도 멈출 수 있게 (위습·변화는 10초 넘게 기다린다)
                 if (not chat and not slow and not ui.unit(ui.last)) or (k % 3 == 2 and mine_of(g, me, sid) - before):
                     done = True
                     break
@@ -1187,17 +1194,24 @@ def _steps(g, steps):
             time.sleep(0.05)
         good = True
         return 'ok'
+    except Halt:
+        halt = True
+        return f'Esc 로 멈췄어요 ({at}/{len(steps)}단계까지 함)'
     except Exception as e:
         traceback.print_exc()
         return f'조합하지 못했어요: {e}'
     finally:   # 화면을 처음 보던 곳으로 -> 원래 창(페이지)으로 -> 마우스 제자리. 창보다 마우스를 먼저 돌리면 게임이 화면을 밀어 버린다
-        if cam0 and ui and not ui.err:
-            ui.back(cam0)
+        # Esc 로 멈췄으면(halt) 아무것도 되돌리지 않는다: 큰 창은 감춘 채, 화면·초점·마우스는 게임에 그대로 (직접 손쓰려고 멈춘 것이다)
+        try:
+            if cam0 and ui and not ui.err and not halt:
+                ui.back(cam0)
+        except Halt:   # 화면을 되돌리는 중에 Esc: 되돌리기만 그만둔다
+            halt = True
         # 조합이 됐으면 큰 창은 감춘 채로 둔다: 만든 유닛을 바로 옮겨야 하니 게임이 보여야 한다. 안 됐으면 까닭을 봐야 하니 다시 띄운다
-        if big and not (good and cfg.get('stay', True)):
+        if big and not halt and not (good and cfg.get('stay', True)):
             big_show(big, True)
         gh, r = game_window(g.pid), W.RECT()
-        if prev and prev != gh and prev != big and prev != u32.GetForegroundWindow() and not cfg.get('stay', True):   # 큰 창에서 눌렀으면 초점은 게임에 둔다
+        if prev and prev != gh and prev != big and prev != u32.GetForegroundWindow() and not cfg.get('stay', True) and not halt:   # 큰 창에서 눌렀으면 초점은 게임에 둔다
             front(prev)
             for _ in range(10):
                 if u32.GetForegroundWindow() != gh:
@@ -1206,8 +1220,8 @@ def _steps(g, steps):
         u32.GetWindowRect(gh, ctypes.byref(r))
         inside = r.left <= old.x < r.right and r.top <= old.y < r.bottom
         stuck = u32.GetForegroundWindow() == gh and not inside
-        print(f'끝: 게임이 앞={u32.GetForegroundWindow() == gh} 마우스 원래 자리가 게임 안={inside}')
-        if not stuck:   # 게임이 앞에 남았는데 마우스만 다른 모니터로 보내면 게임이 화면을 그쪽으로 계속 민다
+        print(f'끝: 게임이 앞={u32.GetForegroundWindow() == gh} 마우스 원래 자리가 게임 안={inside}' + (' · Esc 로 멈춤' if halt else ''))
+        if not stuck and not halt:   # 게임이 앞에 남았는데 마우스만 다른 모니터로 보내면 게임이 화면을 그쪽으로 계속 민다
             u32.SetCursorPos(old.x, old.y)
 
 
@@ -1256,6 +1270,7 @@ class Clicker:
         return o if ok else None
 
     def where(self, p):
+        halted()                                 # 유닛이 걸어가길 기다리는 곳마다 이걸 부른다
         return self.g.pos(p)
 
     def screen(self, xyz):
@@ -1289,6 +1304,7 @@ class Clicker:
         held, end = None, time.time() + secs
         try:
             while time.time() < end and u32.GetForegroundWindow() == self.h:
+                halted()
                 vk = want()
                 if held and vk != held:
                     u32.keybd_event(held, u32.MapVirtualKeyW(held, 0), 3, 0); held = None
@@ -1401,6 +1417,7 @@ class Clicker:
 
     def move(self, s):
         """마우스를 화면 좌표로 옮긴다. 조작판·점수판 쪽, 다른 창에 가려진 곳, 게임이 앞에 없을 때는 안 옮긴다(False)."""
+        halted()
         if not self.safe(s):
             return False
         pt = W.POINT(int(s[0]), int(s[1]))
@@ -1413,6 +1430,7 @@ class Clicker:
         return True
 
     def press(self, right=False):
+        halted()
         u32.mouse_event(8 if right else 2, 0, 0, 0, 0)
         time.sleep(0.04)
         u32.mouse_event(0x10 if right else 4, 0, 0, 0, 0)
@@ -1502,11 +1520,13 @@ class Clicker:
             return False
         time.sleep(0.08)
         u32.mouse_event(2, 0, 0, 0, 0)               # 끌어서 고르기
-        for k in range(1, 7):
-            time.sleep(0.03)
-            self.move((a[0] + (b[0] - a[0]) * k / 6, a[1] + (b[1] - a[1]) * k / 6))
-        time.sleep(0.05)
-        u32.mouse_event(4, 0, 0, 0, 0)
+        try:
+            for k in range(1, 7):
+                time.sleep(0.03)
+                self.move((a[0] + (b[0] - a[0]) * k / 6, a[1] + (b[1] - a[1]) * k / 6))
+            time.sleep(0.05)
+        finally:
+            u32.mouse_event(4, 0, 0, 0, 0)           # Esc 로 멈춰도 버튼은 뗀다
         time.sleep(0.2)
         if not self.click(self.screen(to or (xyz[0] + (320 if n % 2 == 0 else -320), xyz[1] + 160, xyz[2])), right=True):
             return False
