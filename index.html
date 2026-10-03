@@ -269,9 +269,13 @@ function simulate(id, pool) {
 }
 const progress = (id, base = avail) => pins.has(id) && pinRes[id] ? pinRes[id] : simulate(id, { ...base });
 
+// 만들고 난 뒤의 보유. 바로 위 재료만이 아니라 중간 조합이 먹는 유닛까지 뺀다 (여러 단계짜리의 이득이 부풀지 않게).
+// 희귀 미만은 어차피 재료로 쓰는 유닛이라 스탯 손해로 치지 않는다: 그대로 둔다.
+const RARE = RANK.indexOf('희귀함');
 function afterCraft(it) {
-  const c = { ...counts };
-  for (const [m, k] of it.recipes) c[m] = Math.max(0, (c[m] || 0) - k);
+  const c = { ...counts }, pool = { ...counts };
+  simulate(it.id, pool);
+  for (const id of Object.keys(c)) if (pool[id] !== c[id] && items[id] && items[id].rank >= RARE) c[id] = pool[id];
   c[it.id] = (c[it.id] || 0) + 1;
   return c;
 }
