@@ -151,7 +151,7 @@ body.mini #pins { display:block } body.mini #pins .it { display:block; padding:3
 <script>
 // ───────── 설정값 ─────────
 // 목표치 기본값: sions 도우미 메모(풀이감 107%, 신풀깍 201) + 커뮤니티 공략(물딜 스턴 1~1.5, 마딜 1.5~2 / 이감 70~90)
-const DEFAULTS = { 물딜: { 이감: 107, 방깍: 201, 스턴: 1.5, 보잡: 1, 끝딜: 1 }, 마딜: { 이감: 90, 방깍: 0, 스턴: 2, 보잡: 1, 끝딜: 1 } };
+const DEFAULTS = { 물딜: { 이감: 107, 방깍: 201, 스턴: 1.5, 보잡: 1, 끝딜: 0 }, 마딜: { 이감: 90, 방깍: 0, 스턴: 2, 보잡: 1, 끝딜: 1 } };
 const CHECK = ['이감', '방깍', '스턴', '보잡', '끝딜'];
 const STATS = ['이감', '방깍', '스턴', '보잡', '끝딜', '마방깍', '공증', '공속', '마젠', '마증', '추가방깍', '단일스턴', '단일깍', '보스깍', '발동이감'];
 const RANK = ['흔함', '안흔함', '특별함', '희귀함', '전설', '히든', '초월함', '제한됨', '불멸의', '영원함', '신비함', '왜곡', '변화', '세라핌', '랜덤유닛', '조합 아이템', '기타'];
@@ -867,7 +867,7 @@ function openSettings() {
   $('sbox').innerHTML = `<div class="mh"><b>설정</b><button class="ibtn" data-act="close">✕</button></div>` +
     `<div class="sec"><h4>목표치 (0 이면 안 봄)</h4><table class="set"><tr><th></th>${CHECK.map(k => `<th>${k}</th>`).join('')}</tr>` +
     ['물딜', '마딜'].map(m => `<tr><td>${m}</td>${CHECK.map(k => `<td><input type="number" step="${k === '스턴' ? 0.1 : 1}" data-m="${m}" data-k="${k}" value="${targets[m][k]}"></td>`).join('')}</tr>`).join('') +
-    `</table><div class="dim" style="margin-top:6px">기본값: 풀이감 107, 신풀깍 201(sions 메모) · 스턴 물딜 1.5 / 마딜 2 · 보잡 1마리 · 끝딜 1마리</div>` +
+    `</table><div class="dim" style="margin-top:6px">기본값: 풀이감 107, 신풀깍 201(sions 메모) · 스턴 물딜 1.5 / 마딜 2 · 보잡 1마리 · 끝딜 1마리(마딜만)</div>` +
     `<button class="ibtn" data-act="reset" style="margin-top:8px">기본값으로</button></div>` +
     `<div class="sec"><label><input type="checkbox" id="setNotify" ${notify ? 'checked' : ''}> 뽑기·조합 가능 알림 띄우기</label><br>` +
     `<label><input type="checkbox" id="setSound" ${sound ? 'checked' : ''}> 소리 알림 (전설 이상 조합 가능 / 보잡 확보 / 목표 달성)</label>` +
