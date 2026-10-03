@@ -229,8 +229,8 @@ function statsOf(cnt) {
   const t = Object.fromEntries(STATS.map(k => [k, 0]));
   for (const [id, n] of Object.entries(cnt)) {
     const it = items[id]; if (!it || n <= 0 || (legendOnly && it.rank < REC_FROM)) continue;   // 희귀 이하는 결국 재료로 사라진다
-    for (const [k, v] of Object.entries(it.stat.once)) t[k] += auraOnce ? v : v * n;
-    for (const [k, v] of Object.entries(it.stat.each)) t[k] += v * n;
+    const m = auraOnce ? 1 : n;   // 같은 유닛은 여러 마리여도 수치가 겹치지 않는다 (설정에서 끄면 마리 수만큼 더한다)
+    for (const o of [it.stat.once, it.stat.each]) for (const [k, v] of Object.entries(o)) t[k] += v * m;
   }
   return t;
 }
@@ -492,7 +492,7 @@ function render() {
   if (!warns.length && Object.keys(counts).length) warns.push('<span class="chip g">목표치 다 채움</span>');
   if (items[srv.soon]) warns.push(`<span class="chip g it" data-id="${srv.soon}" title="내 구역 한가운데 서 있는 유닛: 몹을 150마리쯤 잡으면 받아요">🎁 곧 받음: ${esc(nm(srv.soon))} ${esc(items[srv.soon].grade.split(' ')[0])}</span>`);
   const extra = ['발동이감', '단일스턴', '단일깍', '보스깍', '마방깍', '공증', '공속', '마젠', '마증', '추가방깍'].filter(k => cur[k])
-    .map(k => k === '단일스턴' ? `단일스턴 ${cur[k]}마리` : `${k === '추가방깍' ? '보스·스토리 추가 방깍' : k} ${+cur[k].toFixed(2)}`).join(' · ');
+    .map(k => k === '단일스턴' ? `단일스턴 ${cur[k]}종` : `${k === '추가방깍' ? '보스·스토리 추가 방깍' : k} ${+cur[k].toFixed(2)}`).join(' · ');
   const deal = { 물뎀: 0, 마뎀: 0, 하이브리드: 0 };
   for (const [id, n] of Object.entries(counts)) if (items[id] && items[id].cat in deal) deal[items[id].cat] += n;
   const dealers = [['물뎀', 'p', '물'], ['마뎀', 'm', '마'], ['하이브리드', 'h', '물마']].filter(([c]) => deal[c]).map(([c, cls, s]) => `<span class="dt ${cls}">${s}</span> ${deal[c]}`).join(' ');
@@ -886,7 +886,7 @@ function openSettings() {
     ` <select id="setTone">${['띵', '딩동', '뿅'].map(x => `<option${x === tone ? ' selected' : ''}>${x}</option>`).join('')}</select>` +
     ` 음량 <input type="range" id="setVol" min="5" max="100" value="${vol}" style="vertical-align:middle"> <button class="ibtn" data-act="testSound">들어보기</button><br>` +
     `<label><input type="checkbox" id="setOs" ${osNotify ? 'checked' : ''}> 윈도우 알림 (게임 중 페이지가 안 보일 때 오른쪽 아래에 표시)</label><br>` +
-    `<label><input type="checkbox" id="setAura" ${auraOnce ? 'checked' : ''}> ● 붙은 수치는 여러 마리여도 한 번만 계산 (끄면 마리 수만큼 더함)</label><br>` +
+    `<label><input type="checkbox" id="setAura" ${auraOnce ? 'checked' : ''}> 같은 유닛은 여러 마리여도 수치를 한 번만 계산 (끄면 마리 수만큼 더함)</label><br>` +
     `<label><input type="checkbox" id="setLegend" ${legendOnly ? 'checked' : ''}> 이감·방깍·스턴 합계는 전설 이상 유닛만 계산 (끄면 희귀·특별함 수치도 더함)</label><br>` +
     `<label><input type="checkbox" id="setWisp" ${selWisp ? 'checked' : ''}> 흔함선택위습을 흔함 대신 쓰기 (진행률에 넣고, 조합 버튼이 위습도 대신 보내요)</label></div>` +
     `<div class="sec"><label><input type="checkbox" id="setStartup" ${srv.startup ? 'checked' : ''}> 윈도우 켤 때 자동 실행 (창 없이 뒤에서)</label>` +
