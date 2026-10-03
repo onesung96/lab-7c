@@ -11,7 +11,7 @@
 import collections, ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.7.20'
+VERSION = '1.7.21'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -162,6 +162,7 @@ def end_game():
                      'timeline': game['timeline']})
         json.dump(hist[-50:], open(HIST_PATH, 'w', encoding='utf-8'), ensure_ascii=False)
     game.update(start=None, timeline=[], tl_ts=0)
+    state['soon'] = None
 
 
 # ───────── 메모리 (읽기 전용) ─────────

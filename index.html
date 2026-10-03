@@ -78,7 +78,7 @@ input[type=number] { width:70px }
 .go { background:#1f7a4a; color:#fff; border:0; border-radius:4px; padding:1px 7px; font:700 11px/16px inherit; cursor:pointer; white-space:nowrap }
 .go:hover { background:#28a062 } .go.hi { background:#8a6a1a } .go.hi:hover { background:#b08a22 }
 .cell .pc.go { color:#fff; padding:0 6px; min-width:0; line-height:15px } .rc .go { font-size:12px; padding:2px 9px }
-body.bigwin #openOverlay, body.bigwin #openMini { display:none }   /* 게임 위 큰 창에서는 쓸 일 없는 단추 */
+body.bigwin #openOverlay, body.bigwin #openMini { display:none } body.bigwin #q { width:110px }   /* 게임 위 큰 창에서는 쓸 일 없는 단추 */
 .cell .ct { min-width:14px; text-align:right; font-weight:700; font-size:12px; color:var(--acc); position:relative }
 .cell .q { flex:none; width:15px; height:15px; border-radius:50%; border:1px solid #4a5160; color:#9aa3b2; background:none; font:10px/13px sans-serif; padding:0; cursor:pointer; position:relative }
 .cell .q:hover { border-color:var(--acc); color:var(--acc) }
@@ -456,8 +456,8 @@ function recCard(x) {
   const st = x.pr.pct >= 1 && sendPlan(x.it.id) ? `<button class="go${x.ready ? '' : ' hi'}" data-chat="${x.it.id}" title="누르면 게임에서 대신 조합해요">${x.ready ? '조합' : stepLabel(x.pr)}</button>`
     : x.ready ? '<b class="ok">바로 가능</b>' : x.pr.pct >= 1 ? `<b class="warn">${stepLabel(x.pr)}</b>` : `<b>${pctText(x.pr)}</b>`;
   return `<div class="rc it" data-id="${x.it.id}" title="${esc(x.it.name)}${lack ? '\n부족: ' + esc(lack) : ''}">` +
-    `<div class="r1">${imgTag(x.it)}<span class="rn"><span class="star">★</span> ${esc(short(x.it.name))}</span><span class="rg" style="color:${gcolor(x.it.grade)}">${esc(x.it.grade.split(' ')[0])}</span><span class="rs">${st}</span><button class="rx" data-ex="${x.it.id}" title="이 유닛은 추천에서 빼기">✕</button></div>` +
-    `<div class="r2">${dmgTag(x.it)}${x.gains.map(([k, d]) => `<span class="bd${d < 0 ? ' neg' : ''}">${k} ${d > 0 ? '+' : ''}${d}</span>`).join('')}</div>` +
+    `<div class="r1">${imgTag(x.it)}<span class="rn"><span class="star">★</span> ${esc(short(x.it.name))}</span><span class="rs">${st}</span><button class="rx" data-ex="${x.it.id}" title="이 유닛은 추천에서 빼기">✕</button></div>` +
+    `<div class="r2"><span class="rg" style="color:${gcolor(x.it.grade)}">${esc(x.it.grade.split(' ')[0])}</span>${dmgTag(x.it)}${x.gains.map(([k, d]) => `<span class="bd${d < 0 ? ' neg' : ''}">${k} ${d > 0 ? '+' : ''}${d}</span>`).join('')}</div>` +
     `<div class="rbar"><div style="width:${pc - wp}%"></div><div class="w" style="width:${wp}%"></div></div>` +
     (x.reason ? `<div class="r0" title="${esc(x.reason)}">💡 ${esc(x.reason)}</div>` : '') +
     `<div class="r3">${x.ready ? '<span class="ok">재료 다 있음</span>' : x.pr.pct >= 1 ? (wildText(x.pr) || `중간 조합 ${x.pr.steps}번이면 완성`) : '부족: ' + esc(lack) + (wispsNeeded(x.pr.miss) ? ` · 랜덤위습 약 ${wispsNeeded(x.pr.miss)}개` : '')}</div></div>`;
@@ -890,7 +890,7 @@ function openSettings() {
     `<label><input type="checkbox" id="setLegend" ${legendOnly ? 'checked' : ''}> 이감·방깍·스턴 합계는 전설 이상 유닛만 계산 (끄면 희귀·특별함 수치도 더함)</label><br>` +
     `<label><input type="checkbox" id="setWisp" ${selWisp ? 'checked' : ''}> 흔함선택위습을 흔함 대신 쓰기 (진행률에 넣고, 조합 버튼이 위습도 대신 보내요)</label></div>` +
     `<div class="sec"><label><input type="checkbox" id="setStartup" ${srv.startup ? 'checked' : ''}> 윈도우 켤 때 자동 실행 (창 없이 뒤에서)</label>` +
-    ` <button class="ibtn" data-act="quit" style="float:right">프로그램 끄기</button>` +
+    ` <button class="ibtn" data-act="quit" style="float:right">프로그램 끄기</button><br>` +
     `<label><input type="checkbox" id="setStay" ${srv.stay !== false ? 'checked' : ''}> 조합이 끝나도 게임 창에 그대로 있기 (끄면 누르던 창으로 돌아가요)</label>` +
     `<div style="margin-top:6px">게임 위 큰 창 여닫는 키 <select id="setBigKey">${['`', 'F1', 'F4', 'F5', 'F7', 'Insert', '마우스 옆버튼'].map(k => `<option${k === (srv.big_key || '마우스 옆버튼') ? ' selected' : ''}>${k}</option>`).join('')}</select> <span class="dim">(\` 는 숫자 1 왼쪽 키)</span> · 큰 창 진하기 <input id="setBigAlpha" type="range" min="30" max="100" step="5" value="${srv.big_alpha || 100}" style="vertical-align:middle;width:110px"> <span id="bigAlphaV">${srv.big_alpha || 100}%</span></div>` +
     `<div class="dim" style="margin-top:4px">버전 ${esc(srv.version || '')}${srv.update ? ` · <a href="${esc(srv.update.url)}" target="_blank" style="color:var(--gold)">새 버전 ${esc(srv.update.ver)} 받기</a>` : ''} · 맵 ${esc(srv.map_version || '')}</div></div>` +
