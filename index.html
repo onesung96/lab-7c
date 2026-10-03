@@ -386,7 +386,7 @@ function makePlan(cur) {
     let best = null;
     for (const id of order) {
       const it = items[id];
-      if (!it.recipes.length || it.lowest || it.rank < REC_FROM || it.rank >= REC_TO) continue;
+      if (!it.recipes.length || it.lowest || counts[id] || made[id] || it.rank < REC_FROM || it.rank >= REC_TO) continue;   // 가진 유닛·이미 계획에 넣은 유닛은 또 넣지 않는다
       const p = { ...pool }, sim = simulate(id, p);
       if (sim.pct < 1 || excluded.has(id)) continue;
       const units = { ...p };
@@ -503,7 +503,7 @@ function render() {
   recList = [];
   for (const id of order) {
     const it = items[id];
-    if (!it.recipes.length || it.lowest || pins.has(id) || it.rank < REC_FROM || it.rank >= REC_TO) continue;
+    if (!it.recipes.length || it.lowest || pins.has(id) || counts[id] || it.rank < REC_FROM || it.rank >= REC_TO) continue;   // 이미 가진 유닛은 또 만들라고 하지 않는다
     const pr = progress(id);
     if (pr.pct < 0.6 || specialLack(pr).length || excluded.has(id)) continue;
     const r = score(it, cur);
@@ -525,7 +525,7 @@ function render() {
   }
   if (recList.length < 6) {
     const have = new Set(recList.map(x => x.it.id));
-    nearAll.filter(x => !have.has(x.it.id) && (x.it.cat === want || x.it.cat === '하이브리드'))
+    nearAll.filter(x => !have.has(x.it.id) && !counts[x.it.id] && (x.it.cat === want || x.it.cat === '하이브리드'))
       .sort((a, b) => b.it.tier - a.it.tier || b.pr.pct - a.pr.pct).slice(0, 6 - recList.length)
       .forEach(x => recList.push({ ...x, why: [], gains: [], reason: `딜러 추천 · ${x.it.cat} · ${x.it.grade.split(' ')[0]}`, s: 0 }));
   }
