@@ -11,7 +11,7 @@
 import collections, ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.7.27'
+VERSION = '1.7.28'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -1192,6 +1192,24 @@ def _steps(g, steps):
                     return f'명령어({cmd})는 입력했는데 새 유닛이 안 보여요. 게임에서 조합됐는지 확인해 주세요'
                 return (f'{i + 1}번째 조합이 게임에서 안 됐어요. ' if len(steps) > 1 else '게임에서 조합이 안 됐어요. ') + '목재·골드·재료를 확인해 주세요'
             time.sleep(0.05)
+        # 만든 유닛을 골라 둔다: 조합 뒤엔 대개 그 유닛을 옮겨야 한다. 화면도 그 유닛에 둔다 (처음 보던 곳으로 안 돌아간다)
+        if cfg.get('stay', True):
+            new = set()
+            for _ in range(20):                  # 재료가 사라진 직후엔 새 유닛이 아직 목록에 없을 수 있다 (최대 0.6초)
+                new = mine_of(g, me, steps[-1][0]) - before
+                if new:
+                    break
+                time.sleep(0.03)
+            try:
+                ui = ui if ui and not ui.err else Clicker(g, me) if new else ui
+                p = next(iter(new), None)
+                if p and not ui.err and ui.aim(p):
+                    cam0 = None
+                    print(f'  만든 유닛 {name_of(p, g)} 을 고름: {"됨" if ui.pick(p) else "겹쳐 있어서 화면만 맞춤"}')
+            except Halt:
+                raise
+            except Exception:                    # 조합은 이미 됐다: 고르다 생긴 문제로 실패라고 하지 않는다
+                traceback.print_exc()
         good = True
         return 'ok'
     except Halt:
@@ -1446,7 +1464,7 @@ class Clicker:
         """지금 마우스 아래에 있는 유닛 (게임이 적어 둔 것)."""
         return self.rq(self.g.world[0] + OFF_HOVER)
 
-    def point_at(self, p, ok):
+    def point_at(self, p, ok, limit=None):
         """마우스를 유닛 p 둘레에서 조금씩 옮기며, 게임이 '마우스 아래 유닛'을 ok 인 유닛이라고 할 때까지 찾는다.
         찾으면 True (마우스는 그 자리에 있다). 유닛마다 눌리는 범위가 달라서(나미는 15픽셀 남짓) 좌표만 믿고 누르면 빗나간다."""
         s = self.body(p)
@@ -1461,7 +1479,7 @@ class Clicker:
         zoom = max(struct.unpack('<f', d)[0], 500) / 4000 if d and len(d) == 4 else 1   # 멀리서 볼수록 같은 거리가 적은 픽셀
         if code in HIT_AT:                        # 이 종류가 지난번에 눌렸던 자리부터 본다: 대개 첫 번에 맞는다
             pts.insert(0, (round(HIT_AT[code][0] / zoom), round(HIT_AT[code][1] / zoom)))
-        for dx, dy in pts:
+        for dx, dy in pts[:limit]:               # limit: 금방 못 찾으면 그만둘 때 (가까운 자리 몇 군데만 본다)
             if self.move((s[0] + dx, s[1] + dy - 15)):
                 time.sleep(0.025)
                 if ok(self.hover()):
@@ -1476,6 +1494,13 @@ class Clicker:
                                 pass
                         return True
         return False
+
+    def pick(self, p):
+        """화면에 들어와 있는 유닛 p 를 눌러서 골라 둔다. 다른 유닛과 겹쳐 서서 금방 못 찾으면 그만둔다(False)."""
+        if not self.point_at(p, lambda u: u == p, 40):
+            return False
+        self.press()
+        return True
 
     def selected(self, before=None):
         """지금 골라진 유닛. before 를 주면 선택이 그것에서 '바뀌고' 게임이 확정할 때까지 기다린다 (최대 0.8초).
