@@ -589,7 +589,8 @@ function renderGrid() {
         : ready ? '<span class="pc full">가능</span>' : pc >= 100 ? `<span class="pc hi">${stepLabel(pr)}</span>` : `<span class="pc">${Math.round(own * 100)}%${add ? `<span class="warn">+${Math.round(add * 100)}%</span>` : ''}</span>`;
       const memo = memos[it.id] ? `<span title="${esc(memos[it.id])}">📝</span>` : '';
       const name = memo + (query ? esc(it.name).replace(new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'), '<mark>$&</mark>') : esc(it.name));
-      rows.push({ idx, sort: ready ? 3 : pr && pr.pct >= 1 ? 2 : pr ? pr.pct - pr.wpct : 0, steps: pr ? pr.steps : 0, wn: pr ? wildN(pr) : 0, n,
+      // 못 만드는 것끼리는 '가진 유닛 + 곧 받을 보상 유닛'으로 찬 순 (위습 몫은 뺀다: 위습은 아껴 쓰는 것, 보상은 어차피 받는 것)
+      rows.push({ idx, sort: ready ? 3 : pr && pr.pct >= 1 ? 2 : pr ? Math.min(pr.pct - pr.wpct + sp, 1.5) : 0, steps: pr ? pr.steps : 0, wn: pr ? wildN(pr) : 0, n,
         keep: query || n > 0 || ready || pinned || recIds.has(it.id) || Math.round(((pr ? pr.pct : 0) + sp) * 100) >= gfilter,
         html: `<div class="cell${n ? ' have' : ''}${ready ? ' ready' : ''}${flash[it.id] > now ? ' flash' : ''}" title="${tip}">` +
           (pr && pr.pct + sp > 0 && pr.pct < 1 ? `<div class="pg" style="width:${own * 100}%"></div>` + (pr.wpct ? `<div class="pg w" style="left:${own * 100}%;width:${pr.wpct * 100}%"></div>` : '') +

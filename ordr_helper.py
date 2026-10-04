@@ -11,7 +11,7 @@
 import collections, ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.7.31'
+VERSION = '1.7.32'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -203,6 +203,31 @@ def find_pid():
     return None
 
 
+def split_twins(known, twins, cur, now):
+    """위습이 유닛으로 바뀌거나 유닛을 뽑으면 같은 유닛이 한꺼번에 '둘' 생겼다가 몇 초 뒤 하나가 사라진다
+    (게임이 버벅이면 3초 넘게 간다). 그대로 세면 '+우솝 ×2' 로 떴다가 줄어든다.
+    -> 같은 주인·같은 종류가 한 번에 둘씩 새로 나타나면 짝을 지어 하나로 센다. 하나가 사라지면 남은 것이 진짜고,
+    6초가 지나도 둘 다 있으면 진짜 둘이다.
+    known = 지난번에 있던 주소들(없으면 None: 첫 읽기), twins = {안 세는 주소: (짝, 생긴 때)}, cur = {주소: (주인, 종류)}.
+    새 twins 와 알릴 일 [(무슨 일, 안 세던 주소, 짝, 주인·종류, 걸린 초)] 을 돌려준다."""
+    events = []
+    for b, (a, t) in list(twins.items()):
+        gone = '짝이 사라짐' if a not in cur else '자기가 사라짐' if b not in cur else '둘 다 남음' if now - t >= 6 else None
+        if gone:
+            events.append((gone, b, a, cur.get(b) or cur.get(a), now - t))
+            del twins[b]
+    fresh = [q for q in cur if q not in known] if known is not None else []
+    if len(fresh) <= 40:                         # 판이 막 시작돼 한꺼번에 쏟아질 때는 짝짓지 않는다
+        by = {}
+        for q in fresh:
+            by.setdefault(cur[q], []).append(q)
+        for kind, qs in by.items():
+            for a, b in zip(qs[0::2], qs[1::2]):
+                twins[b] = (a, now)
+                events.append(('둘이 함께 생김', b, a, kind, 0))
+    return twins, events
+
+
 class Game:
     def __init__(self, pid):
         self.pid = pid
@@ -351,7 +376,7 @@ class Game:
         ptrs = self.unit_ptrs()
         if ptrs is None:
             return None
-        found, self.samples, self.neutral, self.anchor = [], [], [], {}
+        cur, self.samples, self.neutral, self.anchor = {}, [], [], {}
         for q in ptrs:
             o = self.read(q, SZ)
             if not o or len(o) < SZ or o[:8] != self.vt:
@@ -362,10 +387,17 @@ class Game:
             if code == b'U50h':                  # h05U '연구소 효과': 플레이어마다 자기 구역 한가운데에 하나 서 있다
                 self.anchor[owner] = q
             if sid is not None and struct.unpack_from('<I', o, OFF_GONE)[0] == 0:
-                found.append((owner, sid))
+                cur[q] = (owner, sid)
                 if owner >= 24:                  # 중립
                     self.neutral.append((q, sid))
-        return found
+        spots = {q: self.pos(q) for b, (a, _) in getattr(self, 'twins', {}).items() for q in (a, b)}   # 사라지기 전 자리 (기록용)
+        self.twins, events = split_twins(getattr(self, 'known', None), getattr(self, 'twins', {}), cur, time.time())
+        self.known = set(cur)
+        for what, b, a, kind, secs in events:        # 내 유닛 것만 기록에 남긴다 (어느 쪽이 사라지는지 알아 두려고)
+            if kind and kind[0] == getattr(self, 'me', None):
+                at = lambda q: (lambda v: v and (round(v[0]), round(v[1])))(self.pos(q) or spots.get(q))
+                print(f'  같은 유닛(id={kind[1]}) {what}: 자리 {at(a)} · {at(b)}' + (f' ({secs:.1f}초 뒤)' if secs else ' -> 하나로 셈'))
+        return [v for q, v in cur.items() if q not in self.twins]
 
     def pos(self, p):
         """유닛의 월드 좌표 (x, y, z)."""
@@ -589,6 +621,7 @@ def run_list_mode(g):
             bad = 0
         if me is None:
             me = g.local_slot()
+        g.me = state['owner']
         publish(found, me)
         state['soon'] = g.reward(state['owner'])
         r = g.resources()
