@@ -11,7 +11,7 @@
 import collections, ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.7.30'
+VERSION = '1.7.31'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -1366,11 +1366,17 @@ class Clicker:
                 u32.keybd_event(held, u32.MapVirtualKeyW(held, 0), 3, 0)
         return False
 
-    def settle(self):
-        """화면이 멈출 때까지 기다렸다가 (최대 0.6초) 카메라가 보는 점을 돌려준다."""
-        time.sleep(0.12)
+    def settle(self, prev):
+        """미니맵을 누른 뒤 화면이 옮겨 가서 멈출 때까지 기다렸다가 카메라가 보는 점을 돌려준다. prev = 누르기 전에 보던 점.
+        게임이 버벅이면(판 후반) 화면이 한참 뒤에 움직인다: 너무 일찍 읽으면 누르기 전 자리를 '옮겨 간 자리'로 안다.
+        그래서 prev 에서 벗어날 때까지 먼저 기다리고(최대 1초), 그다음 멈출 때까지 기다린다."""
         c = self.cam()
-        for _ in range(10):
+        for _ in range(20):
+            if c != prev:
+                break
+            time.sleep(0.05)
+            c = self.cam()
+        for _ in range(8):
             time.sleep(0.05)
             last, c = c, self.cam()
             if c == last:
@@ -1407,11 +1413,12 @@ class Clicker:
             return None
         pts, got = [(lo + (hi - lo) * 0.3, y0 + (y1 - y0) * 0.35), (lo + (hi - lo) * 0.7, y0 + (y1 - y0) * 0.65)], []
         for _again in range(2):                        # 게임 창이 막 앞으로 온 직후엔 첫 클릭이 안 먹을 때가 있다: 한 번 더
-            got = []
+            got, was = [], self.cam()
             for px, py in pts:
                 if not self.mini_click(px, py):
                     return None
-                got.append(self.settle())
+                was = self.settle(was)
+                got.append(was)
             if all(got):
                 kx, ky = (got[1][0] - got[0][0]) / (pts[1][0] - pts[0][0]), (got[1][1] - got[0][1]) / (pts[1][1] - pts[0][1])
                 if 5 < kx < 500 and -500 < ky < -5:
@@ -1430,10 +1437,11 @@ class Clicker:
         clamp = lambda a, b: (min(max(a, wb[0]), wb[2]), min(max(b, wb[1]), wb[3]))   # 맵 안의 점만 누른다 = 미니맵 안
         x, y = clamp(x, y)
         c0, c, at = self.cam(), None, (x, y)
+        was = c0
         for _fix in range(2):
             if not self.mini_click(px + (at[0] - X) / kx, py + (at[1] - Y) / ky):
                 return False
-            c = self.settle()
+            c = was = self.settle(was)
             if not c:
                 return False
             if abs(c[0] - x) < 400 and abs(c[1] - y) < 400:
@@ -1605,6 +1613,8 @@ class Clicker:
                 break
             time.sleep(0.02)
             now = self.rq(self.sel + OFF_SEL_NOW)
+        if before is not None and now and now != before:
+            return now                               # 내 화면에서는 바뀌었다: 확정이 늦어도(게임이 버벅일 때) 고른 것으로 본다
         return now if now == self.rq(self.sel + OFF_SEL_SYNC) else 0
 
     def step_aside(self, blocker, p, n):
