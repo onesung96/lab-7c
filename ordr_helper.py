@@ -11,7 +11,7 @@
 import collections, ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.7.37'
+VERSION = '1.7.38'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -1065,6 +1065,8 @@ def valid_cmd(text):
 def front(h):
     u32.keybd_event(0x12, 0, 0, 0)   # Alt 를 눌렀다 떼야 윈도우가 다른 프로그램 창을 앞으로 보내 준다
     u32.SetForegroundWindow(h)
+    u32.keybd_event(0x11, 0, 0, 0)   # Alt 를 떼기 전에 Ctrl 을 한 번 눌렀다 뗀다: Alt 만 눌렀다 떼면 창이 '메뉴 모드'가 돼서 다음 클릭을 먹는다
+    u32.keybd_event(0x11, 0, 2, 0)
     u32.keybd_event(0x12, 0, 2, 0)
 
 
@@ -1429,10 +1431,15 @@ class Clicker:
         for _again in range(2):                        # 게임 창이 막 앞으로 온 직후엔 첫 클릭이 안 먹을 때가 있다: 한 번 더
             got, was = [], self.cam()
             for px, py in pts:
-                if not self.mini_click(px, py):
-                    return None
-                was = self.settle(was)
-                got.append(was)
+                c = was
+                for _click in range(3):              # 눌렀는데 화면이 그대로면(클릭이 안 먹었으면) 다시 누른다
+                    if not self.mini_click(px, py):
+                        return None
+                    c = self.settle(was)
+                    if c and was and abs(c[0] - was[0]) + abs(c[1] - was[1]) > 30:
+                        break
+                was = c
+                got.append(c)
             if all(got):
                 kx, ky = (got[1][0] - got[0][0]) / (pts[1][0] - pts[0][0]), (got[1][1] - got[0][1]) / (pts[1][1] - pts[0][1])
                 # 셋째(가운데)를 누른 자리가 앞의 둘 한가운데여야 맞는 눈금이다: 클릭 하나가 안 먹었거나 늦게 먹으면 여기서 걸린다
@@ -1452,22 +1459,25 @@ class Clicker:
         px, py, X, Y, kx, ky, wb = cal[:7]
         clamp = lambda a, b: (min(max(a, wb[0]), wb[2]), min(max(b, wb[1]), wb[3]))   # 맵 안의 점만 누른다 = 미니맵 안
         x, y = clamp(x, y)
-        c0, c, at = self.cam(), None, (x, y)
-        was = c0
-        for _fix in range(2):
+        c0 = was = c = self.cam()
+        at, fixed = (x, y), False
+        for _try in range(4):
             if not self.mini_click(px + (at[0] - X) / kx, py + (at[1] - Y) / ky):
                 return False
-            c = was = self.settle(was)
+            c = self.settle(was)
             if not c:
                 return False
             if abs(c[0] - x) < 400 and abs(c[1] - y) < 400:
                 return True
-            nxt = clamp(at[0] + x - c[0], at[1] + y - c[1])   # 빗나간 만큼 고쳐서 한 번 더
-            if abs(nxt[0] - at[0]) + abs(nxt[1] - at[1]) < 50:
+            if abs(c[0] - was[0]) + abs(c[1] - was[1]) < 30:
+                # 화면이 그대로다 = 클릭이 안 먹었다 (게임 창으로 막 넘어온 직후에 흔하다). 같은 자리를 다시 누른다.
+                # 이걸 '빗나갔다'고 보고 고쳐 누르면 갈 거리의 두 배를 가서 맵 구석에 떨어진다 (1.7.30~1.7.37 의 잘못)
+                continue
+            if fixed:
                 break
-            at = nxt
-        if c0 and abs(c[0] - c0[0]) + abs(c[1] - c0[1]) < 50 or abs(c[0] - x) + abs(c[1] - y) > 1500:
-            MINI_CAL.pop(key, None)                    # 화면이 안 움직였거나 엉뚱한 데로 갔다: 눈금이 틀렸다, 다음에 다시 맞춘다
+            at, was, fixed = clamp(at[0] + x - c[0], at[1] + y - c[1]), c, True   # 조금 빗나갔다: 그만큼 고쳐서 한 번만 더
+        if abs(c[0] - c0[0]) + abs(c[1] - c0[1]) < 30 or abs(c[0] - x) + abs(c[1] - y) > 1500:
+            MINI_CAL.pop(key, None)                    # 화면이 안 움직였거나 엉뚱한 데로 갔다: 눈금을 다음에 다시 맞춘다
         print(f'  미니맵으로 ({x:.0f},{y:.0f}) 에 못 닿음: 화면은 ({c[0]:.0f},{c[1]:.0f}) (맵 가장자리면 여기까지가 끝)')
         return False
 
@@ -1524,6 +1534,25 @@ class Clicker:
         u32.SetCursorPos(pt.x, pt.y)
         u32.mouse_event(1, 1, 0, 0, 0)    # 1픽셀 흔들기: 게임이 '마우스가 움직였다'는 신호를 받아야 커서 위치를 새로 잡는다
         u32.mouse_event(1, -1, 0, 0, 0)
+        self.at, self.spot = (pt.x, pt.y), s
+        return True
+
+    def drift(self):
+        """내가 마우스를 둔 자리에서 지금 몇 픽셀 벗어나 있나. 조합 중에 손으로 마우스를 움직이면 엉뚱한 데를 누르게 된다."""
+        pt = W.POINT()
+        u32.GetCursorPos(ctypes.byref(pt))
+        at = getattr(self, 'at', None)
+        return abs(pt.x - at[0]) + abs(pt.y - at[1]) if at else 0
+
+    def again(self, ok):
+        """방금 누른 자리에서 한 번 더 누른다 (클릭이 안 먹었을 때). 누른 뒤엔 게임이 '마우스 아래 유닛'을 비워 두니
+        마우스를 그 자리에 다시 놓아 잡게 한 뒤, 그 유닛이 맞으면 누른다. 눌렀으면 True."""
+        if not self.move(self.spot, True):
+            return False
+        time.sleep(0.05)
+        if not ok(self.hover()):
+            return False
+        self.press()
         return True
 
     def press(self, right=False):
@@ -1780,11 +1809,12 @@ class Clicker:
                 now = self.selected()
             else:
                 now = self.selected(before)
-                if (not now or now == before) and is_wisp(self.hover()) and self.hover() not in skip:
-                    time.sleep(0.1)              # 눌렀는데 선택이 그대로다: 같은 자리에서 바로 한 번 더
-                    under = self.hover()
-                    self.press()
-                    now = self.selected(before)
+                if not now or now == before:         # 눌렀는데 선택이 그대로다 = 클릭이 안 먹었다: 같은 자리에서 바로 한 번 더
+                    moved = self.drift()
+                    if self.again(lambda u: is_wisp(u) and u not in skip):
+                        under = self.hover()
+                        now = self.selected(before)
+                    print(f'  위습을 눌렀는데 선택이 그대로라 한 번 더 누름 (누를 때 마우스가 벗어나 있던 거리 {moved}픽셀)')
             if under != before and (now == under or misses):
                 self.hit_ok(now == under)
             if is_wisp(now) and now not in skip and self.only(now, before):
@@ -1859,12 +1889,12 @@ class Clicker:
                     now = self.selected()
                 else:
                     now = self.selected(before)
-                    if (not now or now == before) and key_of(self.hover()):
-                        time.sleep(0.1)          # 눌렀는데 선택이 그대로다: 방금 끝난 조합이 선택을 도로 바꿔 놓았을 수 있다. 같은 자리에서 바로 한 번 더
-                        under = self.hover()
-                        self.press()
-                        now = self.selected(before)
-                        print(f'  선택이 그대로라 같은 자리에서 한 번 더 누름 -> 고른 유닛 {name(now)}')
+                    if not now or now == before:
+                        moved = self.drift()     # 눌렀는데 선택이 그대로다 = 클릭이 안 먹었다: 같은 자리에서 바로 한 번 더
+                        if self.again(key_of):
+                            under = self.hover()
+                            now = self.selected(before)
+                        print(f'  선택이 그대로라 같은 자리에서 한 번 더 누름 -> 고른 유닛 {name(now)} (누를 때 마우스가 벗어나 있던 거리 {moved}픽셀)')
                 print(f'  마우스 아래 재료 확인 누름 -> 고른 유닛 {name(now)}{" (선택 안 바뀜)" if now == before and under != before else ""}')
                 if under != before and (now == under or misses):   # 이미 골라져 있던 유닛을 다시 눌렀으면 눌렸는지 알 수 없다. 한 번 헛누른 걸로는 자리를 안 버린다
                     self.hit_ok(now == under)
