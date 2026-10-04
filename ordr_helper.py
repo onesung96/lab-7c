@@ -11,7 +11,7 @@
 import collections, ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.7.29'
+VERSION = '1.7.30'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -1097,6 +1097,7 @@ def focus_game():
 OFF_SLOT = 0x6a                             # CPlayerWar3: 슬롯 번호
 RES_STEP = 0xe0                             # 자원 기록 한 칸의 크기. 값(10배)은 칸 +0xb0. 2번 칸 = 골드, 3번 칸 = 목재
 RES_SIG = [struct.pack('<IIQ', k, k, 0) for k in range(1, 9)]   # 칸 머리: 번호 두 번 + 0. 1~8번이 줄지어 있어야 진짜다
+OFF_SEL_COUNT = 0x3a8   # 선택 물체 -> 지금 골라진 유닛 수 (+0x398 머리, +0x3a0 꼬리, 그다음이 개수; 2026-10-04 확인)
 OFF_SEL, OFF_SEL_NOW, OFF_SEL_SYNC = 0x168, 0x3b0, 0x348   # 플레이어 -> 선택 물체 -> 방금 고른 유닛 / 게임이 확정한 유닛
 OFF_SPRITE, OFF_POS = 0x60, 0x170           # 유닛 -> 그리기 물체 -> 위치 (x, y, z)
 OFF_CAM, OFF_CAM_TARGET, OFF_CAM_DIST = 0x228, 0xc0, 0x108   # CWorldFrameWar3 -> CCamera -> 보는 점 / 거리
@@ -1329,6 +1330,11 @@ class Clicker:
         # 거기 선 유닛은 좌표가 맞아도 눌리지 않는다. 밖에 있으면 aim() 이 화면을 옮겨 상자 안으로 데려온다.
         return s and self.rc.right * 0.10 < s[0] < self.rc.right * 0.64 and self.rc.bottom * 0.18 < s[1] < self.rc.bottom * 0.68
 
+    def seen(self, s):
+        # 화면에 보이는 데 전부 (맨 위 자원 줄, 아래 조작판·미니맵만 뺀다). 유닛 위에 마우스가 올라갔는지 게임에서 확인하고
+        # 누를 때는 여기면 된다: 점수판에 가려 있으면 확인에서 걸러진다. 화면에 보이는 유닛 때문에 화면을 옮기지 않으려는 것.
+        return s and self.rc.right * 0.03 < s[0] < self.rc.right * 0.97 and self.rc.bottom * 0.09 < s[1] < self.rc.bottom * 0.74
+
     def cam(self):
         """카메라가 보는 점 (x, y)."""
         c = self.g.read(self.rq(self.g.world[0] + OFF_CAM) + OFF_CAM_TARGET, 8)
@@ -1409,7 +1415,7 @@ class Clicker:
             if all(got):
                 kx, ky = (got[1][0] - got[0][0]) / (pts[1][0] - pts[0][0]), (got[1][1] - got[0][1]) / (pts[1][1] - pts[0][1])
                 if 5 < kx < 500 and -500 < ky < -5:
-                    return (pts[0][0], pts[0][1], got[0][0], got[0][1], kx, ky, wb, (lo + 2, hi - 2, y0 + 2, y1 - 2))
+                    return (pts[0][0], pts[0][1], got[0][0], got[0][1], kx, ky, wb)
         print(f'  미니맵 눈금을 못 맞춤: 눌러도 화면이 안 따라옴 {got}')
         return None
 
@@ -1420,20 +1426,20 @@ class Clicker:
         if not cal:
             return False
         MINI_CAL[key] = cal
-        px, py, X, Y, kx, ky, wb, box = cal
-        x, y = min(max(x, wb[0]), wb[2]), min(max(y, wb[1]), wb[3])
-        inside = lambda a, b: (min(max(a, box[0]), box[1]), min(max(b, box[2]), box[3]))   # 미니맵 밖은 절대 안 누른다
-        c0, c, at = self.cam(), None, inside(px + (x - X) / kx, py + (y - Y) / ky)
+        px, py, X, Y, kx, ky, wb = cal[:7]
+        clamp = lambda a, b: (min(max(a, wb[0]), wb[2]), min(max(b, wb[1]), wb[3]))   # 맵 안의 점만 누른다 = 미니맵 안
+        x, y = clamp(x, y)
+        c0, c, at = self.cam(), None, (x, y)
         for _fix in range(2):
-            if not self.mini_click(*at):
+            if not self.mini_click(px + (at[0] - X) / kx, py + (at[1] - Y) / ky):
                 return False
             c = self.settle()
             if not c:
                 return False
             if abs(c[0] - x) < 400 and abs(c[1] - y) < 400:
                 return True
-            nxt = inside(at[0] + (x - c[0]) / kx, at[1] + (y - c[1]) / ky)   # 빗나간 만큼 고쳐서 한 번 더
-            if abs(nxt[0] - at[0]) + abs(nxt[1] - at[1]) < 1:
+            nxt = clamp(at[0] + x - c[0], at[1] + y - c[1])   # 빗나간 만큼 고쳐서 한 번 더
+            if abs(nxt[0] - at[0]) + abs(nxt[1] - at[1]) < 50:
                 break
             at = nxt
         if c0 and abs(c[0] - c0[0]) + abs(c[1] - c0[1]) < 50:
@@ -1441,9 +1447,10 @@ class Clicker:
         print(f'  미니맵으로 ({x:.0f},{y:.0f}) 에 못 닿음: 화면은 ({c[0]:.0f},{c[1]:.0f}) (맵 가장자리면 여기까지가 끝)')
         return False
 
-    def aim(self, p):
-        """유닛이 누를 수 있는 자리에 오게 화면을 옮긴다: 미니맵을 눌러 한 번에, 모자라면 방향키로. 화면에 들어왔으면 True."""
-        rc = self.rc
+    def aim(self, p, strict=False):
+        """유닛이 누를 수 있는 자리에 오게 화면을 옮긴다: 미니맵을 눌러 한 번에, 모자라면 방향키로. 화면에 들어왔으면 True.
+        이미 화면에 보이면 옮기지 않는다. strict = 그 둘레의 맨땅을 누를 것(이동 명령)이라 가운데 상자(safe) 안이어야 할 때."""
+        rc, box = self.rc, self.safe if strict else self.seen
 
         def want():
             s = self.body(p)
@@ -1453,15 +1460,16 @@ class Clicker:
             xyz, c = self.where(p), self.cam()       # 카메라 뒤쪽이라 화면 좌표가 없다: 보는 점보다 남쪽이면 아래로
             return (0x28 if xyz[1] < c[1] else 0x26) if xyz and c else 0x28
         xyz, secs = self.where(p), 4
-        if want() is None:
-            return bool(self.safe(self.body(p)))       # 이미 누를 수 있는 자리에 있다
+        if box(self.body(p)):
+            return True                                # 이미 누를 수 있는 자리에 있다: 화면을 안 건드린다
         if xyz:
             self.jump(xyz[0], xyz[1])
             if (self.g.pid, rc.right, rc.bottom) in MINI_CAL:
                 secs = 1.5                             # 미니맵으로 옮겼으면 방향키는 마무리만: 못 가는 곳에서 오래 끌지 않는다
-        self.steer(want, secs)
+        if not box(self.body(p)):
+            self.steer(want, secs)
         s = self.body(p)
-        if self.safe(s):                               # 딱 가운데가 아니어도(맵 끝이라 화면이 더 못 감) 누를 수 있는 자리면 된다
+        if box(s):                                     # 딱 가운데가 아니어도(맵 끝이라 화면이 더 못 감) 누를 수 있는 자리면 된다
             return True
         c = self.cam()
         print(f'  화면에 못 잡음: 유닛 ({xyz[0]:.0f},{xyz[1]:.0f}) · 화면이 보는 곳 {c and (round(c[0]), round(c[1]))} · 화면에서의 자리 {s and (round(s[0]), round(s[1]))} / 창 {rc.right}x{rc.bottom}' if xyz else '  화면에 못 잡음: 유닛이 사라짐')
@@ -1480,10 +1488,11 @@ class Clicker:
             return 0x26 if dy > 150 else 0x28 if dy < -150 else 0x27 if dx > 150 else 0x25 if dx < -150 else None
         self.steer(want, 3)
 
-    def move(self, s):
-        """마우스를 화면 좌표로 옮긴다. 조작판·점수판 쪽, 다른 창에 가려진 곳, 게임이 앞에 없을 때는 안 옮긴다(False)."""
+    def move(self, s, wide=False):
+        """마우스를 화면 좌표로 옮긴다. 조작판·점수판 쪽, 다른 창에 가려진 곳, 게임이 앞에 없을 때는 안 옮긴다(False).
+        wide = 유닛 위에 올라갔는지 게임에서 확인하고 누를 때: 화면에 보이는 데면 된다."""
         halted()
-        if not self.safe(s):
+        if not (self.seen if wide else self.safe)(s):
             return False
         pt = W.POINT(int(s[0]), int(s[1]))
         u32.ClientToScreen(self.h, ctypes.byref(pt))
@@ -1511,9 +1520,11 @@ class Clicker:
         """지금 마우스 아래에 있는 유닛 (게임이 적어 둔 것)."""
         return self.rq(self.g.world[0] + OFF_HOVER)
 
-    def point_at(self, p, ok, limit=None):
+    def point_at(self, p, ok, limit=None, center=False):
         """마우스를 유닛 p 둘레에서 조금씩 옮기며, 게임이 '마우스 아래 유닛'을 ok 인 유닛이라고 할 때까지 찾는다.
-        찾으면 True (마우스는 그 자리에 있다). 유닛마다 눌리는 범위가 달라서(나미는 15픽셀 남짓) 좌표만 믿고 누르면 빗나간다."""
+        찾으면 True (마우스는 그 자리에 있다). 유닛마다 눌리는 범위가 달라서(나미는 15픽셀 남짓) 좌표만 믿고 누르면 빗나간다.
+        center = 찾은 자리에서 사방으로 더듬어 눌리는 범위의 한가운데로 옮긴다: 작은 유닛(이나즈마·위습)은
+        가장자리에서 마우스는 올라가는데 눌러도 안 골라진다."""
         s = self.body(p)
         if not s:
             return False
@@ -1526,28 +1537,64 @@ class Clicker:
         zoom = max(struct.unpack('<f', d)[0], 500) / 4000 if d and len(d) == 4 else 1   # 멀리서 볼수록 같은 거리가 적은 픽셀
         if code in HIT_AT:                        # 이 종류가 지난번에 눌렸던 자리부터 본다: 대개 첫 번에 맞는다
             pts.insert(0, (round(HIT_AT[code][0] / zoom), round(HIT_AT[code][1] / zoom)))
+        on = lambda x, y: self.move((x, y), True) and (time.sleep(0.025) or ok(self.hover()))
         for dx, dy in pts[:limit]:               # limit: 금방 못 찾으면 그만둘 때 (가까운 자리 몇 군데만 본다)
-            if self.move((s[0] + dx, s[1] + dy - 15)):
-                time.sleep(0.025)
-                if ok(self.hover()):
-                    time.sleep(0.03)              # 한 박자 늦게 읽혔을 수 있으니 같은 자리에서 다시 확인
-                    if ok(self.hover()):
-                        new = (round(dx * zoom), round(dy * zoom))
-                        if HIT_AT.get(code) != new:
-                            HIT_AT[code] = new
-                            try:
-                                json.dump(HIT_AT, open(HITS_PATH, 'w', encoding='utf-8'))
-                            except OSError:
-                                pass
-                        return True
+            x, y = s[0] + dx, s[1] + dy - 15
+            if on(x, y) and (time.sleep(0.03) or ok(self.hover())):   # 한 박자 늦게 읽혔을 수 있으니 같은 자리에서 다시 확인
+                if center:
+                    def reach(ux, uy):           # 그 방향으로 몇 픽셀까지 이 유닛 위인가 (3픽셀씩, 24픽셀까지)
+                        k = 0
+                        while k < 8 and on(x + ux * 3 * (k + 1), y + uy * 3 * (k + 1)):
+                            k += 1
+                        return k * 3
+                    mx, my = x + (reach(1, 0) - reach(-1, 0)) / 2, y + (reach(0, 1) - reach(0, -1)) / 2
+                    if on(mx, my):
+                        x, y = mx, my
+                    elif not on(x, y):
+                        continue
+                self.hit = (code, (round((x - s[0]) * zoom), round((y - s[1] + 15) * zoom)))
+                return True
         return False
 
-    def pick(self, p):
+    def hit_ok(self, good):
+        """방금 point_at 이 찾은 자리를 눌렀더니 그 유닛이 골라졌는가. 골라졌으면 그 자리를 이 종류의 '눌리는 자리'로 적어 두고,
+        안 골라졌으면 지운다 (마우스는 올라가는데 눌리지는 않는 가장자리였다: 다음에 거기부터 누르면 또 헛누른다)."""
+        code, new = getattr(self, 'hit', (None, None))
+        if code is None or (HIT_AT.get(code) == new if good else code not in HIT_AT):
+            return
+        if good:
+            HIT_AT[code] = new
+        else:
+            del HIT_AT[code]
+        try:
+            json.dump(HIT_AT, open(HITS_PATH, 'w', encoding='utf-8'))
+        except OSError:
+            pass
+
+    def count(self):
+        """지금 골라진 유닛 수 (게임이 적어 둔 것). 못 읽으면 0."""
+        d = self.g.read(self.sel + OFF_SEL_COUNT, 4)
+        n = struct.unpack('<I', d)[0] if d and len(d) == 4 else 0
+        return n if n <= 24 else 0
+
+    def only(self, now, before):
+        """방금 누른 뒤 now 한 마리만 골라져 있는가. 여럿이 골라진 채 단축키·이동을 보내면 전부에게 들어간다.
+        수를 못 읽으면(게임이 업데이트됐을 때) 선택이 바뀌었는지로 본다."""
+        n = self.count()
+        return n == 1 if n else now != before
+
+    def pick(self, p, center=False):
         """화면에 들어와 있는 유닛 p 를 눌러서 골라 둔다. 다른 유닛과 겹쳐 서서 금방 못 찾으면 그만둔다(False)."""
-        if not self.point_at(p, lambda u: u == p, 40):
-            return False
-        self.press()
-        return True
+        for fine in (center, True):              # 눌렀는데 안 골라지면 눌리는 범위 한가운데를 찾아 한 번 더
+            if not self.point_at(p, lambda u: u == p, 40, fine):
+                return False
+            before = self.rq(self.sel + OFF_SEL_NOW)
+            self.press()
+            got = before == p or self.selected(before) == p
+            self.hit_ok(got)
+            if got:
+                return True
+        return False
 
     def selected(self, before=None):
         """지금 골라진 유닛. before 를 주면 선택이 그것에서 '바뀌고' 게임이 확정할 때까지 기다린다 (최대 0.8초).
@@ -1562,6 +1609,7 @@ class Clicker:
 
     def step_aside(self, blocker, p, n):
         """지금 골라져 있는 유닛(blocker)을 재료 유닛 p 에게서 멀리 보낸다 (오른쪽 클릭 = 이동). 보냈으면 True."""
+        self.aim(p, True)                            # 둘레 맨땅을 눌러야 한다
         a, b = self.where(blocker), self.where(p)
         if not a or not b:
             return False
@@ -1584,6 +1632,7 @@ class Clicker:
         """유닛 p 둘레에 뭉쳐 선 내 유닛들을 한꺼번에 끌어서 고른 뒤 옆으로 보낸다.
         무리로 움직이면 게임이 대형을 지어 서로 떨어뜨려 세우니, 겹쳐서 못 누르던 유닛이 따로 서게 된다.
         끌어서 고르면 남의 유닛은 안 골라지니, 남의 유닛과 겹친 내 유닛만 빼낼 때도 쓴다 (to = 보낼 곳)."""
+        self.aim(p, True)                            # 끌 상자와 보낼 곳이 맨땅이어야 한다
         s, xyz = self.body(p), self.where(p)
         if not s or not xyz:
             return False
@@ -1611,19 +1660,6 @@ class Clicker:
             last = now
         time.sleep(0.25)                             # 뒤따라오는 유닛들이 자리를 잡을 때까지
         return True
-
-    def alone(self, p, wisps, to):
-        """지금 골라진 게 위습 p 한 마리뿐인지 직접 본다: 바로 옆 빈 땅(to)으로 조금 움직여 보고, 다른 위습이 따라 움직이면 여럿이 골라진 것이다.
-        선택이 '바뀌었는지'로 알 수 없을 때(이미 골라져 있던 위습을 다시 눌렀을 때) 쓴다."""
-        pos = {w: self.where(w) for w in wisps}
-        if not self.click(self.screen(to), right=True):
-            return False
-        for _ in range(16):                          # 출발할 때까지 (최대 0.8초)
-            time.sleep(0.05)
-            if any(self.where(w) != pos[w] for w in wisps):
-                time.sleep(0.12)                     # 늦게 출발하는 것까지 본다
-                return [w for w in wisps if self.where(w) != pos[w]] == [p]
-        return False
 
     def wisp(self, sid, skip=()):
         """흔함선택위습 하나를 골라, 이 흔함의 전시 유닛(7번 플레이어)이 서 있는 자리로 보낸다. 거기 닿으면 그 흔함으로 바뀐다.
@@ -1668,13 +1704,12 @@ class Clicker:
             c = [t for t in c if t[1] > 200 ** 2]
             return max(c)[2] if c else None
 
-        tried, moved, cleared, now, before = set(), 0, 0, 0, 0
+        tried, moved, cleared, now, before, fine = set(), 0, 0, 0, 0, False
         for attempt in range(7):
             before = self.rq(self.sel + OFF_SEL_NOW)
             live = [w for w in wisps if is_wisp(w)]
             if not live:
                 return '흔함선택위습이 없어요'
-            # 지금 골라진 위습 말고 다른 위습부터: 선택이 '바뀌면' 한 마리만 골라진 것을 바로 안다
             pool = [w for w in live if w != before and w not in tried] or [w for w in live if w not in tried] or live
             w = min(pool, key=lambda a: (bool(crowd(a)), min(d2(self.where(a), self.where(b)) for b in marks)))
             m = min(marks, key=lambda b: d2(self.where(w), self.where(b)))
@@ -1689,17 +1724,15 @@ class Clicker:
                 if self.scatter(w, 0, to):
                     cleared += 1
                     print(f'  위습들을 끌어서 골라 빈 곳으로 옮김 (겹쳐 있던 남의 유닛 {len(near)})')
-                    # 위습 여럿을 한꺼번에 골랐다: 원래 자리에 남은 남의 유닛을 눌러 선택을 푼다 (안 풀려도 아래 확인이 막는다)
-                    if self.point_at(near[0], lambda u: u and not self.unit(u), 30):
-                        self.press()
-                        self.selected(self.rq(self.sel + OFF_SEL_NOW))
                     continue
-            if not self.point_at(w, is_wisp, 70 if attempt < 5 else None):
+            if not self.point_at(w, lambda u: is_wisp(u) and u not in skip, 70 if attempt < 5 else None, fine):
+                if not self.safe(self.body(w)) and self.aim(w, True):
+                    continue
                 print(f'  마우스로 위습을 못 찾음 ({attempt + 1}번째)')
-                if not (to and cleared < 2 and self.scatter(w, 0, to)):
-                    tried.add(w)
-                else:
+                if to and cleared < 2 and self.scatter(w, 0, to):
                     cleared += 1
+                else:
+                    tried.add(w)
                 continue
             under = self.hover()
             self.press()
@@ -1708,21 +1741,20 @@ class Clicker:
                 now = self.selected()
             else:
                 now = self.selected(before)
-            if is_wisp(now):
-                if now != before or len(live) == 1:
-                    break                            # 선택이 바뀌었다 = 방금 누른 한 마리만 골라졌다
-                x, y, z = self.where(now)
-                mx, my, _ = self.where(m)
-                n = max(((x - mx) ** 2 + (y - my) ** 2) ** 0.5, 1)
-                if self.alone(now, live, (x + (x - mx) / n * 90, y + (y - my) / n * 90, z)):   # 뽑는 자리 반대쪽으로 조금
-                    break
-                print('  위습 한 마리만 골라졌는지 확인 못 함 -> 다른 위습으로')
-                tried.add(now)
-            elif now and self.unit(now):             # 겹쳐 선 내 다른 유닛이 골라졌다: 지금 골라져 있으니 옆으로 보낸다
+            if under != before:
+                self.hit_ok(now == under)
+            if is_wisp(now) and now not in skip and self.only(now, before):
+                break                                # 위습 한 마리만 골라졌다
+            if now == under and is_wisp(now):        # 누른 위습이 골라지긴 했는데 여럿이 함께 골라져 있다 (드물다): 한 번 더 누른다
+                print(f'  위습이 {self.count()}마리 골라져 있음 -> 다시 누름')
+            elif now == before or not now or now in skip:   # 눌렀는데 선택이 그대로다 = 헛눌렀다 (작은 유닛의 가장자리)
+                print(f'  위습을 눌렀는데 안 골라짐 -> 눌리는 범위 한가운데를 찾아 다시 ({attempt + 1}번째)')
+                fine = True
+            elif self.unit(now):                     # 겹쳐 선 내 다른 유닛이 골라졌다: 지금 골라져 있으니 옆으로 보낸다
                 print(f'  위습을 눌렀는데 {name_of(now, g)} 가 골라짐 -> 옆으로 보냄')
                 self.step_aside(now, w, moved)
                 moved += 1
-            else:                                    # 남의 유닛이 골라졌거나 아무것도 안 골라졌다: 빈 곳으로 옮기고 다시
+            else:                                    # 남의 유닛이 골라졌다: 빈 곳으로 옮기고 다시
                 print(f'  위습을 눌렀는데 남의 유닛이 골라짐 ({attempt + 1}번째)')
                 if to and cleared < 2 and self.scatter(w, 0, to):
                     cleared += 1
@@ -1731,7 +1763,7 @@ class Clicker:
         else:
             return '흔함선택위습을 한 마리만 고르지 못했어요. 위습을 다른 유닛과 조금 떨어뜨려 주세요'
         self.last = now                          # 보낸 위습: 유닛으로 바뀌면 사라진다
-        if not self.aim(m) or not self.click(self.screen(self.where(m)), right=True):   # 전시 유닛의 발밑으로 이동
+        if not self.aim(m, True) or not self.click(self.screen(self.where(m)), right=True):   # 전시 유닛의 발밑으로 이동
             return '뽑는 자리를 화면에서 누르지 못했어요'
         print(f'  위습 -> {name_of(m, g)} 자리로 보냄')
         return 'ok'
@@ -1757,6 +1789,7 @@ class Clicker:
         if not cands:
             return '조합 버튼을 가진 재료 유닛이 없어요'
         tried = scattered = moved = 0
+        fine = False                             # 헛눌렀으면 다음엔 눌리는 범위 한가운데를 찾아서 누른다
         for _, p in sorted(cands)[:4]:           # 화면 가운데에서 가까운 것부터
             if not self.unit(p):                 # 그새 사라졌다 (판이 끝났거나 다른 조합에 쓰였다)
                 continue
@@ -1765,13 +1798,15 @@ class Clicker:
                     break
                 tried += 1
                 # 이미 골라져 있어도 늘 한 마리를 눌러서 고른다: 여러 마리가 함께 골라져 있으면 단축키가 전부에 들어가 여러 번 조합된다
-                if not self.point_at(p, key_of):
+                if not self.point_at(p, key_of, None, fine):
+                    if not self.safe(self.body(p)) and self.aim(p, True):   # 화면 가장자리라 점수판 따위에 가렸을 수 있다: 가운데로 데려와서 다시
+                        continue
                     print(f'  마우스로 {name(p)} 를 못 찾음 -> 둘레 유닛을 옮겨 떨어뜨림 ({scattered + 1}번째)')
                     if scattered < 2 and self.scatter(p, scattered):
                         scattered += 1
                         continue
                     break
-                before, under = self.selected(), self.hover()
+                before, under = self.rq(self.sel + OFF_SEL_NOW), self.hover()
                 self.press()                     # 마우스 아래가 재료인 걸 두 번 확인했으니 바로 누른다
                 if under == before:              # 골라져 있던 그 유닛을 다시 누른 것: 선택이 안 바뀌는 게 맞다
                     time.sleep(0.12)
@@ -1779,14 +1814,20 @@ class Clicker:
                 else:
                     now = self.selected(before)
                 print(f'  마우스 아래 재료 확인 누름 -> 고른 유닛 {name(now)}{" (선택 안 바뀜)" if now == before and under != before else ""}')
+                if under != before:              # 이미 골라져 있던 유닛을 다시 눌렀으면 눌렸는지 알 수 없다
+                    self.hit_ok(now == under)
                 key = key_of(now)                # 겹친 다른 유닛이 골라졌어도 같은 재료면 된다
-                if key and u32.GetForegroundWindow() == self.h:
+                # 한 마리만 골라졌을 때만 단축키를 누른다: 여럿이 골라져 있으면 전부에게 들어가 여러 번 조합된다
+                if key and self.only(now, before if under != before else 0) and u32.GetForegroundWindow() == self.h:
                     time.sleep(0.02)
                     self.last = now              # 단축키를 누른 재료: 조합되면 사라진다
                     tap(ord(key), u32.MapVirtualKeyW(ord(key), 0))
                     return 'ok'
+                if not now or (now == before and under != before) or key:   # 눌렀는데 선택이 그대로다 = 헛눌렀다 (작은 유닛의 가장자리)
+                    print(f'  {name(under)} 를 눌렀는데 안 골라짐 -> 눌리는 범위 한가운데를 찾아 다시')
+                    fine = True
                 # 재료 위에서 눌렀는데 겹쳐 선 다른 내 유닛이 골라졌다: 그 유닛은 지금 골라져 있으니 옆으로 보내고 다시 누른다
-                if now and now != p and self.unit(now) and moved < 6 and self.step_aside(now, p, moved):
+                elif now != p and self.unit(now) and moved < 6 and self.step_aside(now, p, moved):
                     moved += 1
                 else:
                     time.sleep(0.15)             # 선택이 안 바뀌었다: 한 박자 쉬고 다시
