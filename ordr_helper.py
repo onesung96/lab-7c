@@ -11,7 +11,7 @@
 import collections, ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.7.34'
+VERSION = '1.7.35'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -203,18 +203,6 @@ def find_pid():
     return None
 
 
-def short_lived(born, cur, now):
-    """잠깐 있다 사라진 유닛을 찾는다 (기록용). 유닛을 얻을 때 수가 잠깐 부풀었다 줄어드는 까닭을 알아내려는 것.
-    born = {주소: (생긴 때, (주인, 종류))} 을 고쳐 쓰고, 15초 안에 사라진 것들 [(주소, (주인, 종류), 산 시간)] 을 돌려준다."""
-    out = [(q, kind, now - t) for q, (t, kind) in born.items() if q not in cur and now - t < 15]
-    first = not born
-    for q in [q for q in born if q not in cur]:
-        del born[q]
-    for q, kind in cur.items():
-        born.setdefault(q, (0 if first else now, kind))    # 처음 읽을 때 이미 있던 것은 오래된 것으로 친다
-    return out
-
-
 class Game:
     def __init__(self, pid):
         self.pid = pid
@@ -377,17 +365,6 @@ class Game:
                 cur[q] = (owner, sid)
                 if owner >= 24:                  # 중립
                     self.neutral.append((q, sid))
-        me, now = getattr(self, 'me', None), time.time()
-        self.born = getattr(self, 'born', {})
-        self.spot = getattr(self, 'spot', {})            # 내 유닛이 처음 보인 자리 (사라진 뒤엔 못 읽으니 미리 적어 둔다)
-        for q, kind in cur.items():
-            if kind[0] == me and q not in self.born:
-                self.spot[q] = self.pos(q)
-        for q, kind, age in short_lived(self.born, cur, now):
-            if kind[0] == me:
-                at = self.spot.get(q)
-                print(f'  잠깐 있다 사라진 내 유닛: id={kind[1]} · {age:.1f}초 · 생긴 자리 {at and (round(at[0]), round(at[1]))}')
-        self.spot = {q: v for q, v in self.spot.items() if q in cur}
         return list(cur.values())
 
     def pos(self, p):
@@ -1217,6 +1194,15 @@ def _steps(g, steps):
                 elif (not chat and not slow and not ui.unit(ui.last)) or (k % 3 == 2 and mine_of(g, me, sid) - before):
                     done = True
                     break
+            if chat and msg == 'ok' and not done:
+                print(f'조합 {i + 1}/{len(steps)} id={sid} {cmd}: 새 유닛이 안 보여서 명령어를 한 번 더 침')
+                msg = _chat(cmd)
+                for k in range(100 if msg == 'ok' else 0):
+                    time.sleep(0.03)
+                    halted()
+                    if k % 3 == 2 and mine_of(g, me, sid) - before:
+                        done = True
+                        break
             if wisp and msg == 'ok':
                 left = sum(1 for w in sent if still(w))
                 print(f'조합 {i + 1}/{len(steps)} id={sid} @wisp: 위습 {len(sent)}마리를 보냄, 안 바뀐 것 {left}  (고르고 누르기 {t1 - t0:.2f}초, 다 바뀔 때까지 {time.time() - t1:.2f}초)')
@@ -1400,7 +1386,7 @@ class Clicker:
                 break
             time.sleep(0.05)
             c = self.cam()
-        for _ in range(8):
+        for _ in range(30):                          # 먼 곳으로는 미끄러지듯 한참 간다: 멈출 때까지 (최대 1.5초)
             time.sleep(0.05)
             last, c = c, self.cam()
             if c == last:
@@ -1616,8 +1602,20 @@ class Clicker:
         n = self.count()
         return n == 1 if n else now != before
 
+    def still(self, p):
+        """유닛 p 가 멈춰 설 때까지 기다린다 (최대 1.5초). 서 있으면 0.04초만 쓴다."""
+        last = self.where(p)
+        for _ in range(38):
+            time.sleep(0.04)
+            now = self.where(p)
+            if now == last:
+                return True
+            last = now
+        return False
+
     def pick(self, p, center=False):
         """화면에 들어와 있는 유닛 p 를 눌러서 골라 둔다. 다른 유닛과 겹쳐 서서 금방 못 찾으면 그만둔다(False)."""
+        self.still(p)
         for fine in (center, True):              # 눌렀는데 안 골라지면 눌리는 범위 한가운데를 찾아 한 번 더
             if not self.point_at(p, lambda u: u == p, 40, fine):
                 return False
@@ -1759,6 +1757,7 @@ class Clicker:
                     cleared += 1
                     print(f'  위습들을 끌어서 골라 빈 곳으로 옮김 (겹쳐 있던 남의 유닛 {len(near)})')
                     continue
+            self.still(w)
             if not self.point_at(w, lambda u: is_wisp(u) and u not in skip, 70 if attempt < 5 else None, fine):
                 if not self.safe(self.body(w)) and self.aim(w, True):
                     continue
@@ -1837,6 +1836,7 @@ class Clicker:
                     break
                 tried += 1
                 # 이미 골라져 있어도 늘 한 마리를 눌러서 고른다: 여러 마리가 함께 골라져 있으면 단축키가 전부에 들어가 여러 번 조합된다
+                self.still(p)
                 if not self.point_at(p, key_of, None, fine):
                     if not self.safe(self.body(p)) and self.aim(p, True):   # 화면 가장자리라 점수판 따위에 가렸을 수 있다: 가운데로 데려와서 다시
                         continue
