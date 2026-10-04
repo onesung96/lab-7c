@@ -11,7 +11,7 @@
 import collections, ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.7.33'
+VERSION = '1.7.34'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -1630,17 +1630,16 @@ class Clicker:
         return False
 
     def selected(self, before=None):
-        """지금 골라진 유닛. before 를 주면 선택이 그것에서 '바뀔' 때까지 기다린다 (최대 0.36초).
-        바뀌기 전에 읽으면 방금 전 유닛을 고른 줄 안다."""
+        """지금 골라진 유닛 (내 화면의 선택). before 를 주면 선택이 그것에서 '바뀔' 때까지 기다린다 (최대 0.36초).
+        게임이 '확정'한 선택(다른 사람들에게 알려진 것)과 같아질 때까지 기다리지 않는다: 게임이 버벅이면 확정이 한참 늦어서,
+        제대로 골라 놓고도 '안 골라졌다'고 알고 다시 눌렀다. 명령은 내 화면의 선택에 들어간다."""
         now = self.rq(self.sel + OFF_SEL_NOW)
-        for _ in range(18 if before is not None else 0):   # 최대 0.36초
-            if now and now != before and now == self.rq(self.sel + OFF_SEL_SYNC):
+        for _ in range(18 if before is not None else 0):
+            if now and now != before:
                 break
             time.sleep(0.02)
             now = self.rq(self.sel + OFF_SEL_NOW)
-        if before is not None and now and now != before:
-            return now                               # 내 화면에서는 바뀌었다: 확정이 늦어도(게임이 버벅일 때) 고른 것으로 본다
-        return now if now == self.rq(self.sel + OFF_SEL_SYNC) else 0
+        return now
 
     def step_aside(self, blocker, p, n):
         """지금 골라져 있는 유닛(blocker)을 재료 유닛 p 에게서 멀리 보낸다 (오른쪽 클릭 = 이동). 보냈으면 True."""
@@ -1776,6 +1775,11 @@ class Clicker:
                 now = self.selected()
             else:
                 now = self.selected(before)
+                if (not now or now == before) and is_wisp(self.hover()) and self.hover() not in skip:
+                    time.sleep(0.1)              # 눌렀는데 선택이 그대로다: 같은 자리에서 바로 한 번 더
+                    under = self.hover()
+                    self.press()
+                    now = self.selected(before)
             if under != before:
                 self.hit_ok(now == under)
             if is_wisp(now) and now not in skip and self.only(now, before):
@@ -1848,6 +1852,12 @@ class Clicker:
                     now = self.selected()
                 else:
                     now = self.selected(before)
+                    if (not now or now == before) and key_of(self.hover()):
+                        time.sleep(0.1)          # 눌렀는데 선택이 그대로다: 방금 끝난 조합이 선택을 도로 바꿔 놓았을 수 있다. 같은 자리에서 바로 한 번 더
+                        under = self.hover()
+                        self.press()
+                        now = self.selected(before)
+                        print(f'  선택이 그대로라 같은 자리에서 한 번 더 누름 -> 고른 유닛 {name(now)}')
                 print(f'  마우스 아래 재료 확인 누름 -> 고른 유닛 {name(now)}{" (선택 안 바뀜)" if now == before and under != before else ""}')
                 if under != before:              # 이미 골라져 있던 유닛을 다시 눌렀으면 눌렸는지 알 수 없다
                     self.hit_ok(now == under)
