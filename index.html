@@ -69,6 +69,7 @@ input[type=number] { width:70px }
 .cell { position:relative; display:flex; align-items:center; gap:4px; height:19px; padding:0 4px 0 5px; background:var(--card); border-bottom:1px solid #1f232a }
 .dt { flex:none; position:relative; font-size:10px; font-weight:700; line-height:14px; padding:0 3px; border-radius:3px }
 .dt.p { color:#ff9166; background:rgba(255,145,102,.16) } .dt.m { color:#b79bff; background:rgba(183,155,255,.18) } .dt.h { color:#f0d264; background:rgba(240,210,100,.15) } .dt.n { color:#8f98a8; background:rgba(143,152,168,.14) }
+.pk { color:#ff4d4d; font-weight:700 } .tp { color:#ffa53a }
 .dt.q { background:none; outline:1px dashed currentColor; outline-offset:-1px; opacity:.85 }   /* 추정 */
 .cell .pg { position:absolute; left:0; top:0; bottom:0; background:rgba(106,168,255,.15); pointer-events:none } .cell .pg.w { background:rgba(240,180,70,.16) } .cell .pg.s { background:rgba(255,209,102,.34) }
 .cell img { width:15px; height:15px; border-radius:2px; flex:none; position:relative }
@@ -143,7 +144,7 @@ body.mini #pins { display:block } body.mini #pins .it { display:block; padding:3
   <span id="hiddenBar"></span>
   <span>접기 <span class="seg" id="gfilter"><button data-f="0">안 접음</button><button data-f="30">30%↓</button><button data-f="50">50%↓</button><button data-f="70">70%↓</button></span></span>
   <span class="seg" id="gsort"><button data-s="pct" title="바로 가능 → 지금 만들 수 있는 것(위습 적게 먹는 순) → 나머지는 위습을 빼고 가진 유닛만으로 찬 순">진행률순</button><button data-s="orig">sions 순서</button></span>
-  <span><span class="go">조합</span> <span class="go hi">N단계</span> 누르면 게임에서 대신 조합 · <b class="ok">가능</b> 지금 바로 · <b class="warn">N단계</b> 중간 조합 N번 · <b>%</b> 하위 재료까지 진행률 <span class="warn">+%</span> 흔함선택위습·🎁보상 유닛으로 더 찰 몫 · <b class="warn">위습N</b> 위습 N개 씀 · <span class="dt p">물</span> 물딜 <span class="dt m">마</span> 마딜 <span class="dt n q">공</span> 보조 (점선은 추정) · <span class="star">★</span> 추천 · <span class="pin">📌</span> 찜 · <b>?</b> 조합식</span>
+  <span><span class="go">조합</span> <span class="go hi">N단계</span> 누르면 게임에서 대신 조합 · <b class="ok">가능</b> 지금 바로 · <b class="warn">N단계</b> 중간 조합 N번 · <b>%</b> 하위 재료까지 진행률 <span class="warn">+%</span> 흔함선택위습·🎁보상 유닛으로 더 찰 몫 · <b class="warn">위습N</b> 위습 N개 씀 · <span class="dt p">물</span> 물딜 <span class="dt m">마</span> 마딜 <span class="dt n q">공</span> 보조 (점선은 추정) · <span class="star">★</span> 지금 추천 · <span class="pk">★</span> 커뮤니티 평이 좋은 초월·불멸 <span class="tp">⚠</span> 함정 평 · <span class="pin">📌</span> 찜 · <b>?</b> 조합식</span>
 </div>
 <div id="grid"></div>
 <div id="modal" class="ov" hidden><div class="box" id="mbox"></div></div>
@@ -459,6 +460,19 @@ function recCard(x) {
     `<div class="r3">${x.ready ? '<span class="ok">재료 다 있음</span>' : x.pr.pct >= 1 ? (wildText(x.pr) || `중간 조합 ${x.pr.steps}번이면 완성`) : '부족: ' + esc(lack) + (wispsNeeded(x.pr.miss) ? ` · 랜덤위습 약 ${wispsNeeded(x.pr.miss)}개` : '')}</div></div>`;
 }
 // 물딜·마딜 표시: sions 목록이 물뎀/마뎀/하이브리드로 나눠 둔 등급(전설 이상)만 안다
+// 초월·불멸 가운데 커뮤니티에서 평이 좋은 유닛(빨간 ★)과 함정이라는 평이 있는 유닛(⚠). 참고용: 버전이 바뀌면 평도 바뀐다.
+// 근거(2026-10 에 모음): 원랜디 캐릭터 검색기의 물딜·마딜 추천 순위 / 나무위키 유닛 평가(2026-09 수정) / 디시 원랜디 갤러리 평가 글(2024-01).
+// 추천 순위가 높고 나무위키 평가도 좋은 것만 ★, 나무위키가 함정으로 적고 다른 곳에서도 좋게 안 보는 것만 ⚠.
+const PICKS = {
+  184: '물딜 추천 1위. 클각 잡기 쉽고 보스 딜도 됨', 177: '물딜 추천 상위. 비싸지만 초월 중 딜이 가장 셈', 170: '물딜 추천 상위. 마나스킬이 터지면 화력이 큼',
+  253: '물딜 추천 상위. 저점이 높고 킹 제한과 잘 맞음', 173: '물딜 추천 상위. 풀깍만 맞추면 딜이 충분',
+  179: '마딜 추천 1위. 가장 확실한 2스턴', 182: '마딜 추천 상위. 광폭화 처리가 좋고 다루기 쉬움', 169: '마딜 추천 상위. 이감이 높고 딜도 준수',
+  186: '마딜 추천 상위. 스턴·보잡·라인딜을 혼자 함',
+  201: '물딜 추천 2위. 방깍·스턴·라인딜이 고루 좋음', 71: '물딜 추천 3위. 버프가 많을수록 딜이 크게 오름', 198: '물딜 추천 상위. 단일·스토리 딜이 매우 셈',
+  196: '깍60·이감50·공증60 을 한 번에 줌. 초보에게도 추천', 195: '공속 버프·방깍에 무난한 딜. 초보에게도 추천', 194: '스턴 1.4 와 폭발뎀 증폭. 마딜에 두루 좋음',
+};
+const TRAPS = { 251: '값에 비해 딜이 약하다는 평', 291: '변신 중에는 스턴이 안 돼 홀딩이 어려움', 188: '써니호 관리가 번거롭고 조합이 제한적' };
+const pickTag = id => PICKS[id] ? `<span class="pk" title="커뮤니티 추천: ${PICKS[id]}">★</span>` : TRAPS[id] ? `<span class="tp" title="함정이라는 평: ${TRAPS[id]}">⚠</span>` : '';
 // 목록이 나눠 두지 않은 유닛(스턴·단일·끝딜·배, 왜곡·변화·세라핌, 희귀 이하)은 이름·설명에 적힌 능력치로 어느 쪽 조합에 쓰는지 추정한다.
 // 목록이 나눠 둔 유닛으로 맞춰 보면: '물' 은 85%, '마' 는 거의 다 맞는다. 추정은 점선 테두리로 구분한다.
 function sideOf(it) {
@@ -607,7 +621,7 @@ function renderGrid() {
         html: `<div class="cell${n ? ' have' : ''}${ready ? ' ready' : ''}${flash[it.id] > now ? ' flash' : ''}" title="${tip}">` +
           (pr && pr.pct + sp > 0 && pr.pct < 1 ? `<div class="pg" style="width:${own * 100}%"></div>` + (pr.wpct ? `<div class="pg w" style="left:${own * 100}%;width:${pr.wpct * 100}%"></div>` : '') +
             (sp ? `<div class="pg s" style="left:${pr.pct * 100}%;width:${Math.min(sp, 1 - pr.pct) * 100}%"></div>` : '') : '') + imgTag(it) + dmgTag(it) +
-          `<span class="nm">${pinned ? '<span class="pin">📌</span>' : ''}${recIds.has(it.id) ? '<span class="star">★</span>' : ''}${it.id === soon ? '🎁' : ''}${name}</span>${label}` +
+          `<span class="nm">${pinned ? '<span class="pin">📌</span>' : ''}${recIds.has(it.id) ? '<span class="star">★</span>' : ''}${it.id === soon ? '🎁' : ''}${pickTag(it.id)}${name}</span>${label}` +
           `<span class="ct">${n || ''}</span><button class="q" data-id="${it.id}" title="조합식">?</button></div>` });
     });
     if (!rows.length) continue;
@@ -794,12 +808,14 @@ function openRecipe(id, push = true) {
   const lack = pr ? Object.entries(pr.miss) : [];
   const up = (usedIn[id] || []).map(u => card(u)).join('');
   $('mbox').innerHTML =
-    `<div class="mh">${mstack.length > 1 ? '<button class="ibtn" data-act="back">←</button>' : ''}<b>${esc(it.name)} <span style="color:${gcolor(it.grade)}">- ${esc(it.grade)}</span></b>${dmgTag(it)}` +
+    `<div class="mh">${mstack.length > 1 ? '<button class="ibtn" data-act="back">←</button>' : ''}<b>${esc(it.name)} <span style="color:${gcolor(it.grade)}">- ${esc(it.grade)}</span></b>${dmgTag(it)}${pickTag(id)}` +
     (craft && it.rank >= REC_FROM && it.rank < REC_TO ? `<button class="ibtn" data-ex="${id}">${excluded.has(id) ? '추천에 다시 넣기' : '추천에서 빼기'}</button>` : '') +
     (craft && sendPlan(id) ? `<button class="ibtn" data-chat="${id}" title="게임에서 재료 유닛을 고르고 조합 단축키(또는 명령어)를 대신 눌러요">게임에서 조합${sendPlan(id).length > 1 ? ` (${sendPlan(id).length}단계)` : chatCmd(it) ? ` (${esc(chatCmd(it))})` : ''}${costText(planCost(sendPlan(id))) ? ` · <span class="${lacks(planCost(sendPlan(id))) ? 'bad' : 'dim'}">${costText(planCost(sendPlan(id)))}${lacks(planCost(sendPlan(id))) ? ' 모자람' : ''}</span>` : ''}</button>` : '') +
     (craft ? `<button class="ibtn" data-act="pin">${pinned ? '📌 찜 해제' : '📌 찜하기'}</button>` : '') +
     (craft && pinned ? `<button class="ibtn" data-act="autopin" title="재료가 다 모이면 버튼을 안 눌러도 게임에서 조합해요. 만들고 나면 찜이 풀려요">${autoPins.has(id) ? '⚡ 자동 조합 끄기' : '⚡ 모이면 자동 조합'}</button>` : '') +
     `<span class="${n ? 'ok' : 'dim'}">보유 ${n}</span><button class="ibtn" data-act="close">✕</button></div>` +
+    (PICKS[id] ? `<div class="sec"><span class="pk">★ 커뮤니티 추천</span> ${PICKS[id]} <span class="dim">(캐릭터 검색기 추천 순위·나무위키 평가 기준, 참고용)</span></div>` : '') +
+    (TRAPS[id] ? `<div class="sec"><span class="tp">⚠ 함정이라는 평</span> ${TRAPS[id]} <span class="dim">(나무위키 평가 기준, 참고용)</span></div>` : '') +
     (it.descr ? `<div class="sec">${esc(it.descr)}</div>` : '') +
     (craft ? `<div class="sec"><h4>조합법 · 진행률 ${pctText(pr)}${ready ? ' · <span class="ok">지금 조합 가능</span>' : ''}${pinned ? ' · 📌 재료 예약 중' : ''}</h4>` +
       `<div class="mats">${it.recipes.map(([m, k]) => card(m, k)).join('')}</div></div>` : '') +
