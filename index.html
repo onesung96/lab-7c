@@ -68,7 +68,8 @@ input[type=number] { width:70px }
 .gh span { color:var(--dim); font-weight:400 }
 .cell { position:relative; display:flex; align-items:center; gap:4px; height:19px; padding:0 4px 0 5px; background:var(--card); border-bottom:1px solid #1f232a }
 .dt { flex:none; position:relative; font-size:10px; font-weight:700; line-height:14px; padding:0 3px; border-radius:3px }
-.dt.p { color:#ff9166; background:rgba(255,145,102,.16) } .dt.m { color:#b79bff; background:rgba(183,155,255,.18) } .dt.h { color:#f0d264; background:rgba(240,210,100,.15) }
+.dt.p { color:#ff9166; background:rgba(255,145,102,.16) } .dt.m { color:#b79bff; background:rgba(183,155,255,.18) } .dt.h { color:#f0d264; background:rgba(240,210,100,.15) } .dt.n { color:#8f98a8; background:rgba(143,152,168,.14) }
+.dt.q { background:none; outline:1px dashed currentColor; outline-offset:-1px; opacity:.85 }   /* 추정 */
 .cell .pg { position:absolute; left:0; top:0; bottom:0; background:rgba(106,168,255,.15); pointer-events:none } .cell .pg.w { background:rgba(240,180,70,.16) } .cell .pg.s { background:rgba(255,209,102,.34) }
 .cell img { width:15px; height:15px; border-radius:2px; flex:none; position:relative }
 .cell .nm { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:12px; position:relative }
@@ -142,7 +143,7 @@ body.mini #pins { display:block } body.mini #pins .it { display:block; padding:3
   <span id="hiddenBar"></span>
   <span>접기 <span class="seg" id="gfilter"><button data-f="0">안 접음</button><button data-f="30">30%↓</button><button data-f="50">50%↓</button><button data-f="70">70%↓</button></span></span>
   <span class="seg" id="gsort"><button data-s="pct" title="바로 가능 → 지금 만들 수 있는 것(위습 적게 먹는 순) → 나머지는 위습을 빼고 가진 유닛만으로 찬 순">진행률순</button><button data-s="orig">sions 순서</button></span>
-  <span><span class="go">조합</span> <span class="go hi">N단계</span> 누르면 게임에서 대신 조합 · <b class="ok">가능</b> 지금 바로 · <b class="warn">N단계</b> 중간 조합 N번 · <b>%</b> 하위 재료까지 진행률 <span class="warn">+%</span> 흔함선택위습·🎁보상 유닛으로 더 찰 몫 · <b class="warn">위습N</b> 위습 N개 씀 · <span class="dt p">물</span> 물딜 <span class="dt m">마</span> 마딜 (전설 이상) · <span class="star">★</span> 추천 · <span class="pin">📌</span> 찜 · <b>?</b> 조합식</span>
+  <span><span class="go">조합</span> <span class="go hi">N단계</span> 누르면 게임에서 대신 조합 · <b class="ok">가능</b> 지금 바로 · <b class="warn">N단계</b> 중간 조합 N번 · <b>%</b> 하위 재료까지 진행률 <span class="warn">+%</span> 흔함선택위습·🎁보상 유닛으로 더 찰 몫 · <b class="warn">위습N</b> 위습 N개 씀 · <span class="dt p">물</span> 물딜 <span class="dt m">마</span> 마딜 <span class="dt n q">공</span> 보조 (점선은 추정) · <span class="star">★</span> 추천 · <span class="pin">📌</span> 찜 · <b>?</b> 조합식</span>
 </div>
 <div id="grid"></div>
 <div id="modal" class="ov" hidden><div class="box" id="mbox"></div></div>
@@ -151,7 +152,7 @@ body.mini #pins { display:block } body.mini #pins .it { display:block; padding:3
 <script>
 // ───────── 설정값 ─────────
 // 목표치 기본값: sions 도우미 메모(풀이감 107%, 신풀깍 201) + 커뮤니티 공략(물딜 스턴 1~1.5, 마딜 1.5~2 / 이감 70~90)
-const DEFAULTS = { 물딜: { 이감: 107, 방깍: 201, 스턴: 1.5, 보잡: 1, 끝딜: 0 }, 마딜: { 이감: 90, 방깍: 0, 스턴: 2, 보잡: 1, 끝딜: 1 } };
+const DEFAULTS = { 물딜: { 이감: 107, 방깍: 201, 스턴: 1.5, 보잡: 1, 끝딜: 0 }, 마딜: { 이감: 90, 방깍: 0, 스턴: 1.5, 보잡: 1, 끝딜: 1 } };
 const CHECK = ['이감', '방깍', '스턴', '보잡', '끝딜'];
 const STATS = ['이감', '방깍', '스턴', '보잡', '끝딜', '마방깍', '공증', '공속', '마젠', '마증', '추가방깍', '단일스턴', '단일깍', '보스깍', '발동이감'];
 const RANK = ['흔함', '안흔함', '특별함', '희귀함', '전설', '히든', '초월함', '제한됨', '불멸의', '영원함', '신비함', '왜곡', '변화', '세라핌', '랜덤유닛', '조합 아이템', '기타'];
@@ -179,6 +180,7 @@ let targets = { 물딜: { ...DEFAULTS.물딜, ...savedT.물딜 }, 마딜: { ...D
 let pins = new Set(store.get('pins', []));
 let gfilter = +store.get('gfilter', 50) || 0, gsort = store.get('gsort', 'pct'), notify = store.get('notify', true);
 let openGroups = new Set(), query = '', prevCounts = null, prevReady = null, prevBoss = null, flash = {};
+let noRec = new Set(store.get('noRec', []));   // 추천에서 뺀 스탯 (모자라도 그걸 채우려는 추천은 안 한다)
 let sound = store.get('sound', true), auraOnce = store.get('auraOnce', true), legendOnly = store.get('legendOnly', true), selWisp = store.get('selWisp', true);   // 기본 켬: 위습을 그 흔함 자리로 보내는 것까지 대신 해 주므로
 let tone = store.get('tone', '띵'), vol = store.get('vol', 60), osNotify = store.get('osNotify', false), prevStats = null;
 const WISPS = { '-1': '흔함선택위습', '-2': '안흔함위습', '-3': '특별위습', '-4': '희귀위습', '-5': '초월위습' };
@@ -282,7 +284,7 @@ function score(it, cur) {
   const t = targets[mode], next = statsOf(afterCraft(it));
   let s = 0; const why = [], gains = [];
   for (const k of CHECK) {
-    if (!t[k]) continue;
+    if (!t[k] || noRec.has(k)) continue;
     const d = Math.min(next[k], t[k]) - Math.min(cur[k], t[k]);
     s += d / t[k] * 3;
     if (Math.abs(d) > 0.001) gains.push([k, +d.toFixed(2)]);
@@ -373,7 +375,7 @@ function recReason(x, cur) {
 function makePlan(cur) {
   const t = targets[mode], reserved = {};
   for (const id in counts) { const r = (counts[id] || 0) - (avail[id] || 0); if (r > 0) reserved[id] = r; }
-  const gainOf = (a, b) => CHECK.reduce((s, k) => s + (t[k] ? (Math.min(b[k], t[k]) - Math.min(a[k], t[k])) / t[k] : 0), 0);
+  const gainOf = (a, b) => CHECK.reduce((s, k) => s + (t[k] && !noRec.has(k) ? (Math.min(b[k], t[k]) - Math.min(a[k], t[k])) / t[k] : 0), 0);
   let pool = { ...avail }, made = {}, stats = cur;
   const steps = [];
   for (let n = 0; n < 8; n++) {
@@ -457,8 +459,18 @@ function recCard(x) {
     `<div class="r3">${x.ready ? '<span class="ok">재료 다 있음</span>' : x.pr.pct >= 1 ? (wildText(x.pr) || `중간 조합 ${x.pr.steps}번이면 완성`) : '부족: ' + esc(lack) + (wispsNeeded(x.pr.miss) ? ` · 랜덤위습 약 ${wispsNeeded(x.pr.miss)}개` : '')}</div></div>`;
 }
 // 물딜·마딜 표시: sions 목록이 물뎀/마뎀/하이브리드로 나눠 둔 등급(전설 이상)만 안다
-const dmgTag = it => it.cat === '물뎀' ? '<span class="dt p" title="물리 딜러">물</span>' : it.cat === '마뎀' ? '<span class="dt m" title="마법 딜러">마</span>'
-  : it.cat === '하이브리드' ? '<span class="dt h" title="물리·마법 둘 다">물마</span>' : '';
+// 목록이 나눠 두지 않은 유닛(스턴·단일·끝딜·배, 왜곡·변화·세라핌, 희귀 이하)은 이름·설명에 적힌 능력치로 어느 쪽 조합에 쓰는지 추정한다.
+// 목록이 나눠 둔 유닛으로 맞춰 보면: '물' 은 85%, '마' 는 거의 다 맞는다. 추정은 점선 테두리로 구분한다.
+function sideOf(it) {
+  if (it.cat === '물뎀' || it.cat === '마뎀' || it.cat === '하이브리드') return [{ 물뎀: '물', 마뎀: '마', 하이브리드: '물마' }[it.cat], true];
+  const t = it.name + ' ' + it.descr;
+  const ph = /(?<!마방)(?<!마)(?:방깍|방깎|깍|깎)\s*\(?\d|물딜|물뎀|공증|공속|암브|아머브레이크/.test(t);
+  const mg = /마방깍|마방깎|마증|마뎀|마딜|마젠|마나젠|끝딜|폭뎀증|폭발뎀증/.test(t);
+  return [ph && mg ? '물마' : ph ? '물' : mg ? '마' : it.rank >= REC_FROM && it.rank < REC_TO && it.recipes.length ? '공' : '', false];
+}
+const dmgTag = it => { const [s, sure] = it.side ||= sideOf(it); if (!s) return '';
+  const cls = { 물: 'p', 마: 'm', 물마: 'h', 공: 'n' }[s], tip = { 물: '물딜 조합에 쓰는 유닛', 마: '마딜 조합에 쓰는 유닛', 물마: '물딜·마딜 둘 다', 공: '스턴·이감 보조: 물딜·마딜 어디에나' }[s];
+  return `<span class="dt ${cls}${sure ? '' : ' q'}" title="${tip}${sure ? '' : ' (이름의 능력치로 추정)'}">${s}</span>`; };
 const imgTag = (it, cls = '') => it.img ? `<img class="${cls}" src="${THUMB + it.img}" referrerpolicy="no-referrer" loading="lazy" onerror="this.style.visibility='hidden'">` : `<img class="${cls}" style="visibility:hidden">`;
 
 function render() {
@@ -479,7 +491,7 @@ function render() {
     const r = Math.min(cur[k] / t[k], 1), cls = r >= 1 ? 'ok' : r >= 0.6 ? 'warn' : 'bad';
     sum += `<div class="sb"><div class="top"><span>${k}</span><span class="${cls}">${+cur[k].toFixed(2)} / ${t[k]}</span></div>` +
            `<div class="track"><div class="fill" style="width:${r * 100}%;background:var(--${cls})"></div></div></div>`;
-    if (r < 1) warns.push(k === '보잡' ? '<span class="chip">보스잡기 유닛 없음</span>' : k === '끝딜' ? '<span class="chip">끝딜 유닛 없음</span>' : `<span class="chip${cls === 'warn' ? ' w' : ''}">${k} ${+(t[k] - cur[k]).toFixed(2)} 부족</span>`);
+    if (r < 1 && !noRec.has(k)) warns.push(k === '보잡' ? '<span class="chip">보스잡기 유닛 없음</span>' : k === '끝딜' ? '<span class="chip">끝딜 유닛 없음</span>' : `<span class="chip${cls === 'warn' ? ' w' : ''}">${k} ${+(t[k] - cur[k]).toFixed(2)} 부족</span>`);
   }
   if ((counts[0] || 0) >= 3) warns.push(`<span class="chip w">위습 ${counts[0]}개</span>`);
   for (const [w, label] of Object.entries(WISPS)) if (counts[w]) warns.push(`<span class="chip w" title="${w === '-1' ? (selWisp ? '흔함 대신 쓰는 걸로 계산 중' : '⚙ 설정에서 흔함 대신 쓰기를 켤 수 있어요') : ''}">${label} ${counts[w]}${w === '-1' && selWisp ? ' (계산 포함)' : ''}</span>`);
@@ -878,7 +890,8 @@ function openSettings() {
   $('sbox').innerHTML = `<div class="mh"><b>설정</b><button class="ibtn" data-act="close">✕</button></div>` +
     `<div class="sec"><h4>목표치 (0 이면 안 봄)</h4><table class="set"><tr><th></th>${CHECK.map(k => `<th>${k}</th>`).join('')}</tr>` +
     ['물딜', '마딜'].map(m => `<tr><td>${m}</td>${CHECK.map(k => `<td><input type="number" step="${k === '스턴' ? 0.1 : 1}" data-m="${m}" data-k="${k}" value="${targets[m][k]}"></td>`).join('')}</tr>`).join('') +
-    `</table><div class="dim" style="margin-top:6px">기본값: 풀이감 107, 신풀깍 201(sions 메모) · 스턴 물딜 1.5 / 마딜 2 · 보잡 1마리 · 끝딜 1마리(마딜만)</div>` +
+    `</table><div class="dim" style="margin-top:6px">기본값: 풀이감 107, 신풀깍 201(sions 메모) · 스턴 1.5 · 보잡 1마리 · 끝딜 1마리(마딜만)</div>` +
+    `<div style="margin-top:6px">추천에서 빼기: ${CHECK.map(k => `<label style="margin-right:10px"><input type="checkbox" data-norec="${k}" ${noRec.has(k) ? 'checked' : ''}> ${k}</label>`).join('')}<span class="dim">체크한 스탯은 모자라도 그걸 채우는 유닛을 추천하지 않아요 (막대는 그대로 보여요)</span></div>` +
     `<button class="ibtn" data-act="reset" style="margin-top:8px">기본값으로</button></div>` +
     `<div class="sec"><label><input type="checkbox" id="setNotify" ${notify ? 'checked' : ''}> 뽑기·조합 가능 알림 띄우기</label><br>` +
     `<label><input type="checkbox" id="setSound" ${sound ? 'checked' : ''}> 소리 알림 (전설 이상 조합 가능 / 보잡 확보 / 목표 달성)</label>` +
@@ -950,6 +963,7 @@ document.addEventListener('click', e => {
   const mat = e.target.closest('#mbox .mat'); if (mat) return openRecipe(+mat.dataset.id);
 });
 document.addEventListener('change', e => {
+  if (e.target.dataset.norec) { e.target.checked ? noRec.add(e.target.dataset.norec) : noRec.delete(e.target.dataset.norec); store.set('noRec', [...noRec]); render(); }
   if (e.target.dataset.k) { const { m, k } = e.target.dataset; targets[m] = { ...targets[m], [k]: +e.target.value || 0 }; store.set('targets', targets); render(); }
   if (e.target.id === 'setNotify') { notify = e.target.checked; store.set('notify', notify); }
   if (e.target.dataset.memo) { const v = e.target.value.trim(); if (v) memos[e.target.dataset.memo] = v; else delete memos[e.target.dataset.memo]; store.set('memos', memos); renderGrid(); }

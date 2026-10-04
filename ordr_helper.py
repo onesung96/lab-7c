@@ -11,7 +11,7 @@
 import collections, ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.7.36'
+VERSION = '1.7.37'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -1423,8 +1423,8 @@ class Clicker:
         y0, y1 = (1 - top / st) * Ht, (1 - bottom / st) * Ht
         if hi - lo < 20:
             return None
-        pts, got = [(round(lo + (hi - lo) * f), round(y0 + (y1 - y0) * h)) for f, h in ((0.1, 0.3), (0.9, 0.7), (0.5, 0.5))], []
-        if pts[1][0] - pts[0][0] < 12:
+        pts, got = [(round(lo + (hi - lo) * f), round(y0 + (y1 - y0) * h)) for f, h in ((0.3, 0.35), (0.7, 0.65), (0.5, 0.5))], []   # 띠의 가운데 쪽만: 가장자리는 미니맵 밖(옆 단추)일 수 있다
+        if pts[1][0] - pts[0][0] < 6:
             return None
         for _again in range(2):                        # 게임 창이 막 앞으로 온 직후엔 첫 클릭이 안 먹을 때가 있다: 한 번 더
             got, was = [], self.cam()
