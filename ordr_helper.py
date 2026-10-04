@@ -11,7 +11,7 @@
 import collections, ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.7.32'
+VERSION = '1.7.33'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -203,29 +203,16 @@ def find_pid():
     return None
 
 
-def split_twins(known, twins, cur, now):
-    """위습이 유닛으로 바뀌거나 유닛을 뽑으면 같은 유닛이 한꺼번에 '둘' 생겼다가 몇 초 뒤 하나가 사라진다
-    (게임이 버벅이면 3초 넘게 간다). 그대로 세면 '+우솝 ×2' 로 떴다가 줄어든다.
-    -> 같은 주인·같은 종류가 한 번에 둘씩 새로 나타나면 짝을 지어 하나로 센다. 하나가 사라지면 남은 것이 진짜고,
-    6초가 지나도 둘 다 있으면 진짜 둘이다.
-    known = 지난번에 있던 주소들(없으면 None: 첫 읽기), twins = {안 세는 주소: (짝, 생긴 때)}, cur = {주소: (주인, 종류)}.
-    새 twins 와 알릴 일 [(무슨 일, 안 세던 주소, 짝, 주인·종류, 걸린 초)] 을 돌려준다."""
-    events = []
-    for b, (a, t) in list(twins.items()):
-        gone = '짝이 사라짐' if a not in cur else '자기가 사라짐' if b not in cur else '둘 다 남음' if now - t >= 6 else None
-        if gone:
-            events.append((gone, b, a, cur.get(b) or cur.get(a), now - t))
-            del twins[b]
-    fresh = [q for q in cur if q not in known] if known is not None else []
-    if len(fresh) <= 40:                         # 판이 막 시작돼 한꺼번에 쏟아질 때는 짝짓지 않는다
-        by = {}
-        for q in fresh:
-            by.setdefault(cur[q], []).append(q)
-        for kind, qs in by.items():
-            for a, b in zip(qs[0::2], qs[1::2]):
-                twins[b] = (a, now)
-                events.append(('둘이 함께 생김', b, a, kind, 0))
-    return twins, events
+def short_lived(born, cur, now):
+    """잠깐 있다 사라진 유닛을 찾는다 (기록용). 유닛을 얻을 때 수가 잠깐 부풀었다 줄어드는 까닭을 알아내려는 것.
+    born = {주소: (생긴 때, (주인, 종류))} 을 고쳐 쓰고, 15초 안에 사라진 것들 [(주소, (주인, 종류), 산 시간)] 을 돌려준다."""
+    out = [(q, kind, now - t) for q, (t, kind) in born.items() if q not in cur and now - t < 15]
+    first = not born
+    for q in [q for q in born if q not in cur]:
+        del born[q]
+    for q, kind in cur.items():
+        born.setdefault(q, (0 if first else now, kind))    # 처음 읽을 때 이미 있던 것은 오래된 것으로 친다
+    return out
 
 
 class Game:
@@ -390,14 +377,18 @@ class Game:
                 cur[q] = (owner, sid)
                 if owner >= 24:                  # 중립
                     self.neutral.append((q, sid))
-        spots = {q: self.pos(q) for b, (a, _) in getattr(self, 'twins', {}).items() for q in (a, b)}   # 사라지기 전 자리 (기록용)
-        self.twins, events = split_twins(getattr(self, 'known', None), getattr(self, 'twins', {}), cur, time.time())
-        self.known = set(cur)
-        for what, b, a, kind, secs in events:        # 내 유닛 것만 기록에 남긴다 (어느 쪽이 사라지는지 알아 두려고)
-            if kind and kind[0] == getattr(self, 'me', None):
-                at = lambda q: (lambda v: v and (round(v[0]), round(v[1])))(self.pos(q) or spots.get(q))
-                print(f'  같은 유닛(id={kind[1]}) {what}: 자리 {at(a)} · {at(b)}' + (f' ({secs:.1f}초 뒤)' if secs else ' -> 하나로 셈'))
-        return [v for q, v in cur.items() if q not in self.twins]
+        me, now = getattr(self, 'me', None), time.time()
+        self.born = getattr(self, 'born', {})
+        self.spot = getattr(self, 'spot', {})            # 내 유닛이 처음 보인 자리 (사라진 뒤엔 못 읽으니 미리 적어 둔다)
+        for q, kind in cur.items():
+            if kind[0] == me and q not in self.born:
+                self.spot[q] = self.pos(q)
+        for q, kind, age in short_lived(self.born, cur, now):
+            if kind[0] == me:
+                at = self.spot.get(q)
+                print(f'  잠깐 있다 사라진 내 유닛: id={kind[1]} · {age:.1f}초 · 생긴 자리 {at and (round(at[0]), round(at[1]))}')
+        self.spot = {q: v for q, v in self.spot.items() if q in cur}
+        return list(cur.values())
 
     def pos(self, p):
         """유닛의 월드 좌표 (x, y, z)."""
@@ -1444,7 +1435,7 @@ class Clicker:
         y0, y1 = (1 - top / st) * Ht, (1 - bottom / st) * Ht
         if hi - lo < 20:
             return None
-        pts, got = [(lo + (hi - lo) * 0.3, y0 + (y1 - y0) * 0.35), (lo + (hi - lo) * 0.7, y0 + (y1 - y0) * 0.65)], []
+        pts, got = [(lo + (hi - lo) * f, y0 + (y1 - y0) * h) for f, h in ((0.3, 0.35), (0.7, 0.65), (0.5, 0.5))], []
         for _again in range(2):                        # 게임 창이 막 앞으로 온 직후엔 첫 클릭이 안 먹을 때가 있다: 한 번 더
             got, was = [], self.cam()
             for px, py in pts:
@@ -1454,7 +1445,9 @@ class Clicker:
                 got.append(was)
             if all(got):
                 kx, ky = (got[1][0] - got[0][0]) / (pts[1][0] - pts[0][0]), (got[1][1] - got[0][1]) / (pts[1][1] - pts[0][1])
-                if 5 < kx < 500 and -500 < ky < -5:
+                # 셋째(가운데)를 누른 자리가 앞의 둘 한가운데여야 맞는 눈금이다: 클릭 하나가 안 먹었거나 늦게 먹으면 여기서 걸린다
+                mid = ((got[0][0] + got[1][0]) / 2, (got[0][1] + got[1][1]) / 2)
+                if 5 < kx < 500 and -500 < ky < -5 and abs(got[2][0] - mid[0]) < 250 and abs(got[2][1] - mid[1]) < 250:
                     return (pts[0][0], pts[0][1], got[0][0], got[0][1], kx, ky, wb)
         print(f'  미니맵 눈금을 못 맞춤: 눌러도 화면이 안 따라옴 {got}')
         return None
@@ -1483,8 +1476,8 @@ class Clicker:
             if abs(nxt[0] - at[0]) + abs(nxt[1] - at[1]) < 50:
                 break
             at = nxt
-        if c0 and abs(c[0] - c0[0]) + abs(c[1] - c0[1]) < 50:
-            MINI_CAL.pop(key, None)                    # 화면이 아예 안 움직였다: 눈금을 다음에 다시 맞춘다
+        if c0 and abs(c[0] - c0[0]) + abs(c[1] - c0[1]) < 50 or abs(c[0] - x) + abs(c[1] - y) > 1500:
+            MINI_CAL.pop(key, None)                    # 화면이 안 움직였거나 엉뚱한 데로 갔다: 눈금이 틀렸다, 다음에 다시 맞춘다
         print(f'  미니맵으로 ({x:.0f},{y:.0f}) 에 못 닿음: 화면은 ({c[0]:.0f},{c[1]:.0f}) (맵 가장자리면 여기까지가 끝)')
         return False
 
@@ -1504,8 +1497,7 @@ class Clicker:
         if box(self.body(p)):
             return True                                # 이미 누를 수 있는 자리에 있다: 화면을 안 건드린다
         if xyz:
-            self.jump(xyz[0], xyz[1])
-            if (self.g.pid, rc.right, rc.bottom) in MINI_CAL:
+            if self.jump(xyz[0], xyz[1]):
                 secs = 1.5                             # 미니맵으로 옮겼으면 방향키는 마무리만: 못 가는 곳에서 오래 끌지 않는다
         if not box(self.body(p)):
             self.steer(want, secs)
@@ -1638,10 +1630,10 @@ class Clicker:
         return False
 
     def selected(self, before=None):
-        """지금 골라진 유닛. before 를 주면 선택이 그것에서 '바뀌고' 게임이 확정할 때까지 기다린다 (최대 0.8초).
+        """지금 골라진 유닛. before 를 주면 선택이 그것에서 '바뀔' 때까지 기다린다 (최대 0.36초).
         바뀌기 전에 읽으면 방금 전 유닛을 고른 줄 안다."""
         now = self.rq(self.sel + OFF_SEL_NOW)
-        for _ in range(40 if before is not None else 0):
+        for _ in range(18 if before is not None else 0):   # 최대 0.36초
             if now and now != before and now == self.rq(self.sel + OFF_SEL_SYNC):
                 break
             time.sleep(0.02)
