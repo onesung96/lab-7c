@@ -11,7 +11,7 @@
 import collections, ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.7.35'
+VERSION = '1.7.36'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -1386,10 +1386,12 @@ class Clicker:
                 break
             time.sleep(0.05)
             c = self.cam()
-        for _ in range(30):                          # 먼 곳으로는 미끄러지듯 한참 간다: 멈출 때까지 (최대 1.5초)
-            time.sleep(0.05)
+        same = 0
+        for _ in range(34):                          # 먼 곳으로는 미끄러지듯 한참 간다: 멈출 때까지 (최대 2초)
+            time.sleep(0.06)
             last, c = c, self.cam()
-            if c == last:
+            same = same + 1 if c == last else 0
+            if same >= 3:                            # 세 번 내리 같아야 멈춘 것: 버벅일 땐 가는 도중에도 잠깐 같은 값이 읽힌다
                 break
         return c
 
@@ -1421,7 +1423,9 @@ class Clicker:
         y0, y1 = (1 - top / st) * Ht, (1 - bottom / st) * Ht
         if hi - lo < 20:
             return None
-        pts, got = [(lo + (hi - lo) * f, y0 + (y1 - y0) * h) for f, h in ((0.3, 0.35), (0.7, 0.65), (0.5, 0.5))], []
+        pts, got = [(round(lo + (hi - lo) * f), round(y0 + (y1 - y0) * h)) for f, h in ((0.1, 0.3), (0.9, 0.7), (0.5, 0.5))], []
+        if pts[1][0] - pts[0][0] < 12:
+            return None
         for _again in range(2):                        # 게임 창이 막 앞으로 온 직후엔 첫 클릭이 안 먹을 때가 있다: 한 번 더
             got, was = [], self.cam()
             for px, py in pts:
@@ -1603,12 +1607,14 @@ class Clicker:
         return n == 1 if n else now != before
 
     def still(self, p):
-        """유닛 p 가 멈춰 설 때까지 기다린다 (최대 1.5초). 서 있으면 0.04초만 쓴다."""
-        last = self.where(p)
-        for _ in range(38):
-            time.sleep(0.04)
+        """유닛 p 가 멈춰 설 때까지 기다린다 (최대 1.5초). 서 있으면 0.1초쯤 쓴다.
+        세 번 내리 같은 자리여야 멈춘 것으로 본다: 게임이 버벅이면 걸어가는 유닛도 잠깐은 같은 자리로 읽힌다."""
+        last, same = self.where(p), 0
+        for _ in range(34):
+            time.sleep(0.045)
             now = self.where(p)
-            if now == last:
+            same = same + 1 if now == last else 0
+            if same >= 2:
                 return True
             last = now
         return False
@@ -1736,7 +1742,7 @@ class Clicker:
             c = [t for t in c if t[1] > 200 ** 2]
             return max(c)[2] if c else None
 
-        tried, moved, cleared, now, before, fine = set(), 0, 0, 0, 0, False
+        tried, moved, cleared, now, before, fine, misses = set(), 0, 0, 0, 0, False, 0
         for attempt in range(7):
             before = self.rq(self.sel + OFF_SEL_NOW)
             live = [w for w in wisps if is_wisp(w)]
@@ -1779,15 +1785,16 @@ class Clicker:
                     under = self.hover()
                     self.press()
                     now = self.selected(before)
-            if under != before:
+            if under != before and (now == under or misses):
                 self.hit_ok(now == under)
             if is_wisp(now) and now not in skip and self.only(now, before):
                 break                                # 위습 한 마리만 골라졌다
             if now == under and is_wisp(now):        # 누른 위습이 골라지긴 했는데 여럿이 함께 골라져 있다 (드물다): 한 번 더 누른다
                 print(f'  위습이 {self.count()}마리 골라져 있음 -> 다시 누름')
             elif now == before or not now or now in skip:   # 눌렀는데 선택이 그대로다 = 헛눌렀다 (작은 유닛의 가장자리)
-                print(f'  위습을 눌렀는데 안 골라짐 -> 눌리는 범위 한가운데를 찾아 다시 ({attempt + 1}번째)')
-                fine = True
+                misses += 1
+                print(f'  위습을 눌렀는데 안 골라짐 ({misses}번째) · 누른 뒤 마우스 아래 {name_of(self.hover(), g) if self.hover() else None} · 골라진 수 {self.count()}')
+                fine = misses >= 2
             elif self.unit(now):                     # 겹쳐 선 내 다른 유닛이 골라졌다: 지금 골라져 있으니 옆으로 보낸다
                 print(f'  위습을 눌렀는데 {name_of(now, g)} 가 골라짐 -> 옆으로 보냄')
                 self.step_aside(now, w, moved)
@@ -1827,7 +1834,7 @@ class Clicker:
         if not cands:
             return '조합 버튼을 가진 재료 유닛이 없어요'
         tried = scattered = moved = 0
-        fine = False                             # 헛눌렀으면 다음엔 눌리는 범위 한가운데를 찾아서 누른다
+        fine, misses = False, 0                  # 두 번 내리 헛눌렀으면 눌리는 범위 한가운데를 찾아서 누른다
         for _, p in sorted(cands)[:4]:           # 화면 가운데에서 가까운 것부터
             if not self.unit(p):                 # 그새 사라졌다 (판이 끝났거나 다른 조합에 쓰였다)
                 continue
@@ -1845,7 +1852,7 @@ class Clicker:
                         scattered += 1
                         continue
                     break
-                before, under = self.rq(self.sel + OFF_SEL_NOW), self.hover()
+                before, under, at0 = self.rq(self.sel + OFF_SEL_NOW), self.hover(), self.where(p)
                 self.press()                     # 마우스 아래가 재료인 걸 두 번 확인했으니 바로 누른다
                 if under == before:              # 골라져 있던 그 유닛을 다시 누른 것: 선택이 안 바뀌는 게 맞다
                     time.sleep(0.12)
@@ -1859,7 +1866,7 @@ class Clicker:
                         now = self.selected(before)
                         print(f'  선택이 그대로라 같은 자리에서 한 번 더 누름 -> 고른 유닛 {name(now)}')
                 print(f'  마우스 아래 재료 확인 누름 -> 고른 유닛 {name(now)}{" (선택 안 바뀜)" if now == before and under != before else ""}')
-                if under != before:              # 이미 골라져 있던 유닛을 다시 눌렀으면 눌렸는지 알 수 없다
+                if under != before and (now == under or misses):   # 이미 골라져 있던 유닛을 다시 눌렀으면 눌렸는지 알 수 없다. 한 번 헛누른 걸로는 자리를 안 버린다
                     self.hit_ok(now == under)
                 key = key_of(now)                # 겹친 다른 유닛이 골라졌어도 같은 재료면 된다
                 # 한 마리만 골라졌을 때만 단축키를 누른다: 여럿이 골라져 있으면 전부에게 들어가 여러 번 조합된다
@@ -1869,8 +1876,11 @@ class Clicker:
                     tap(ord(key), u32.MapVirtualKeyW(ord(key), 0))
                     return 'ok'
                 if not now or (now == before and under != before) or key:   # 눌렀는데 선택이 그대로다 = 헛눌렀다 (작은 유닛의 가장자리)
-                    print(f'  {name(under)} 를 눌렀는데 안 골라짐 -> 눌리는 범위 한가운데를 찾아 다시')
-                    fine = True
+                    misses += 1
+                    at1 = self.where(p)
+                    went = ((at1[0] - at0[0]) ** 2 + (at1[1] - at0[1]) ** 2) ** 0.5 if at0 and at1 else -1
+                    print(f'  {name(under)} 를 눌렀는데 안 골라짐 ({misses}번째) · 누른 뒤 마우스 아래 {name(self.hover())} · 그 사이 유닛이 간 거리 {went:.0f} · 골라진 수 {self.count()}')
+                    fine = misses >= 2
                 # 재료 위에서 눌렀는데 겹쳐 선 다른 내 유닛이 골라졌다: 그 유닛은 지금 골라져 있으니 옆으로 보내고 다시 누른다
                 elif now != p and self.unit(now) and moved < 6 and self.step_aside(now, p, moved):
                     moved += 1
