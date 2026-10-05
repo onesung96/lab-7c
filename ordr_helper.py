@@ -11,7 +11,7 @@
 import collections, ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.7.39'
+VERSION = '1.7.40'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -1545,15 +1545,22 @@ class Clicker:
         return abs(pt.x - at[0]) + abs(pt.y - at[1]) if at else 0
 
     def again(self, ok):
-        """방금 누른 자리에서 한 번 더 누른다 (클릭이 안 먹었을 때). 누른 뒤엔 게임이 '마우스 아래 유닛'을 비워 두니
-        마우스를 그 자리에 다시 놓아 잡게 한 뒤, 그 유닛이 맞으면 누른다. 눌렀으면 True."""
-        if not self.move(self.spot, True):
+        """방금 누른 자리에서 한 번 더 누른다 (클릭이 안 먹었을 때). 누른 뒤엔 게임이 '마우스 아래 유닛'을 비워 두는데,
+        같은 자리에 다시 놓기만 해서는(제자리 1픽셀 흔들기) 다시 안 잡힌다: 옆으로 4픽셀 갔다가 돌아와서 잡힐 때까지
+        잠깐(최대 0.25초) 기다린 뒤, 그 유닛이 맞으면 누른다. 눌렀으면 누른 유닛, 아니면 None."""
+        x, y = self.spot
+        if not self.move((x + 4, y), True):
             return False
-        time.sleep(0.05)
-        if not ok(self.hover()):
+        time.sleep(0.03)
+        if not self.move((x, y), True):
             return False
-        self.press()
-        return True
+        for _ in range(10):
+            time.sleep(0.025)
+            u = self.hover()
+            if ok(u):
+                self.press()
+                return u
+        return None
 
     def press(self, right=False):
         halted()
@@ -1811,10 +1818,11 @@ class Clicker:
                 now = self.selected(before)
                 if not now or now == before:         # 눌렀는데 선택이 그대로다 = 클릭이 안 먹었다: 같은 자리에서 바로 한 번 더
                     moved = self.drift()
-                    if self.again(lambda u: is_wisp(u) and u not in skip):
-                        under = self.hover()
+                    redo = self.again(lambda u: is_wisp(u) and u not in skip)
+                    if redo:
+                        under = redo
                         now = self.selected(before)
-                    print(f'  위습을 눌렀는데 선택이 그대로라 한 번 더 누름 (누를 때 마우스가 벗어나 있던 거리 {moved}픽셀)')
+                    print(f'  위습을 눌렀는데 선택이 그대로라 {"한 번 더 누름" if redo else "다시 누르려 했으나 마우스 아래에 위습이 안 잡힘"} (누를 때 마우스가 벗어나 있던 거리 {moved}픽셀)')
             if under != before and (now == under or misses):
                 self.hit_ok(now == under)
             if is_wisp(now) and now not in skip and self.only(now, before):
@@ -1891,10 +1899,11 @@ class Clicker:
                     now = self.selected(before)
                     if not now or now == before:
                         moved = self.drift()     # 눌렀는데 선택이 그대로다 = 클릭이 안 먹었다: 같은 자리에서 바로 한 번 더
-                        if self.again(key_of):
-                            under = self.hover()
+                        redo = self.again(key_of)
+                        if redo:
+                            under = redo
                             now = self.selected(before)
-                        print(f'  선택이 그대로라 같은 자리에서 한 번 더 누름 -> 고른 유닛 {name(now)} (누를 때 마우스가 벗어나 있던 거리 {moved}픽셀)')
+                        print(f'  선택이 그대로라 같은 자리에서 {"한 번 더 누름" if redo else "다시 누르려 했으나 마우스 아래에 재료가 안 잡힘"} -> 고른 유닛 {name(now)} (누를 때 마우스가 벗어나 있던 거리 {moved}픽셀)')
                 print(f'  마우스 아래 재료 확인 누름 -> 고른 유닛 {name(now)}{" (선택 안 바뀜)" if now == before and under != before else ""}')
                 if under != before and (now == under or misses):   # 이미 골라져 있던 유닛을 다시 눌렀으면 눌렸는지 알 수 없다. 한 번 헛누른 걸로는 자리를 안 버린다
                     self.hit_ok(now == under)
