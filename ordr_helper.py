@@ -8,10 +8,10 @@
 
 옵션: --lan (폰에서 보기)  --no-browser  --port=NNNN  --overlay-only (게임 위 작은 창만 띄움)
 """
-import collections, ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
+import collections, ctypes, ctypes.wintypes as W, json, os, re, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.7.41'
+VERSION = '1.7.42'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -162,7 +162,7 @@ def end_game():
                      'timeline': game['timeline']})
         json.dump(hist[-50:], open(HIST_PATH, 'w', encoding='utf-8'), ensure_ascii=False)
     game.update(start=None, timeline=[], tl_ts=0)
-    state['soon'] = None
+    state['soon'] = state['board'] = None
 
 
 # ───────── 메모리 (읽기 전용) ─────────
@@ -235,6 +235,9 @@ class Game:
         self.tt_vt, self.sel_vt = tt and struct.pack('<Q', tt), sel and struct.pack('<Q', sel)
         cam, mm = self.vtable_of(img, base, b'CCamera'), self.vtable_of(img, base, b'CMinimap')
         self.cam_vt, self.mm_vt = cam and struct.pack('<Q', cam), mm and struct.pack('<Q', mm)
+        vt = lambda name: (lambda v: v and struct.pack('<Q', v))(self.vtable_of(img, base, name))
+        self.ui_vt, self.board_vt, self.list_vt, self.line_vt = vt(b'CGameUI'), vt(b'CLeaderboard'), vt(b'CLeaderboardList'), vt(b'CLeaderboardItemData')
+        self.board_look = 0                # 화면의 리더보드 칸을 다시 찾아볼 다음 때 (없을 때 매번 훑지 않게)
         pe = struct.unpack_from('<I', img, 0x3c)[0] if len(img) > 0x40 else 0
         load_offs(f'{struct.unpack_from("<I", img, pe + 8)[0]:x}-{size:x}' if 0 < pe < len(img) - 12 else '?')
         self.pl_off, self.tt = None, []   # 내 플레이어를 가리키는 칸의 위치, CTextTagManager 주소들
@@ -342,6 +345,49 @@ class Game:
         w, pl = self.world[0], self.local_player()
         set_offs(OFF_CAM=self.field(w, self.cam_vt, OFF_CAM), OFF_MINIMAP=self.field(w, self.mm_vt, OFF_MINIMAP),
                  OFF_SEL=self.field(pl, self.sel_vt, OFF_SEL, 0x400))
+
+    def ptr(self, a):
+        d = self.read(a, 8) if a else None
+        return struct.unpack('<Q', d)[0] if d and len(d) == 8 else 0
+
+    def board_lines(self):
+        """화면에 떠 있는 리더보드(이 맵의 '유틸보드')의 줄들을 위에서부터 글자 그대로. 안 떠 있으면 [].
+        월드프레임 -> CGameUI -> 떠 있는 CLeaderboard -> 줄 목록 -> 마디(다음 +8, 줄 물체 +0x10) -> 글자.
+        CGameUI 안의 리더보드 칸이 패치로 밀렸으면 '보이는 리더보드'를 가리키는 칸을 다시 찾는다 (없을 땐 30초에 한 번만)."""
+        global OFF_BOARD
+        if not (self.world and self.ui_vt and self.board_vt and self.list_vt and self.line_vt):
+            return []
+        ui = self.ptr(self.world[0] + OFF_UI)
+        if self.read(ui, 8) != self.ui_vt:
+            off = self.field(self.world[0], self.ui_vt, OFF_UI, 0x200)
+            if off is None:
+                return []
+            set_offs(OFF_UI=off)
+            ui = self.ptr(self.world[0] + off)
+        shown = lambda b: 0x10000 < b < 0x7FFFFFFFFFFF and self.read(b, 8) == self.board_vt and (self.read(b + OFF_SHOWN, 1) or b'\0')[0] & 0x40
+        board = self.ptr(ui + OFF_BOARD)
+        if not shown(board):
+            if self.read(board, 8) == self.board_vt or time.time() < self.board_look:
+                return []                  # 리더보드가 있는데 감춰져 있거나, 방금 찾아봤는데 없었다
+            self.board_look = time.time() + 30
+            d = self.read(ui, 0x1000) or b''
+            hit = [o for o in range(0, len(d) - 7, 8) if shown(struct.unpack_from('<Q', d, o)[0])]
+            if len(hit) != 1:
+                return []
+            set_offs(OFF_BOARD=hit[0])
+            board = self.ptr(ui + hit[0])
+        lst = self.ptr(board + OFF_BOARD_LIST)
+        if self.read(lst, 8) != self.list_vt:
+            return []
+        out, node = [], self.ptr(lst + OFF_LIST_FIRST)
+        while 0x10000 < node < 0x7FFFFFFFFFFF and node % 8 == 0 and len(out) < 40:   # 끝은 홀수 주소(목록 머리)로 돌아온다
+            line = self.ptr(node + 0x10)
+            if self.read(line, 8) != self.line_vt:
+                break
+            d = (self.read(self.ptr(self.ptr(line + OFF_LINE_TEXT) + OFF_REP_TEXT), 200) or b'').split(b'\0')[0]
+            out.append(d.decode('utf-8', 'replace'))
+            node = self.ptr(node + 8)
+        return out
 
     def name_at(self, d, off):
         """플레이어 물체(앞부분 d)의 off 칸이 (이름 주소, 길이) 이면 그 이름."""
@@ -632,7 +678,7 @@ def pieces_of(regions):
 def run_list_mode(g):
     """게임의 유닛 목록을 직접 읽는 방식. 목록이 없어지면(판 끝·프로세스 종료) 돌아간다."""
     state['status'] = '연결됨'
-    empty_since, check_at, me = None, 0, None
+    empty_since, check_at, board_at, me = None, 0, 0, None
     LIVE['g'] = g
     threading.Thread(target=read_names, args=(g,), daemon=True).start()
     while g.alive():
@@ -650,6 +696,12 @@ def run_list_mode(g):
         g.me = state['owner']
         publish(found, me)
         state['soon'] = g.reward(state['owner'])
+        if t0 >= board_at:                              # 유틸보드는 1초에 한 번이면 된다
+            board_at = t0 + 1
+            try:
+                state['board'] = board_stats(g.board_lines())
+            except Exception:
+                traceback.print_exc(); state['board'] = None
         r = g.resources()
         state.update(gold=r and r[0], wood=r and r[1])
         state.update(tick_ms=round((time.time() - t0) * 1000), hot_mb=0, mode='list')
@@ -1165,10 +1217,29 @@ OFF_CAM, OFF_CAM_TARGET, OFF_CAM_DIST = 0x228, 0xc0, 0x108   # CWorldFrameWar3 -
 OFF_VP = 0x58                               # CTextTagManager: 화면 변환 행렬
 OFF_HOVER = 0x470                           # CWorldFrameWar3: 지금 마우스 아래에 있는 유닛
 OFF_MINIMAP, OFF_MM_RECT, OFF_MM_SCREEN, OFF_MM_WORLD = 0x2f0, 0x1e0, 0x234, 0x290   # 월드프레임 -> CMinimap: 자리(아래,왼,위,오른) / 화면 범위 / 맵 범위
+OFF_UI, OFF_BOARD, OFF_SHOWN = 0x40, 0x640, 0x20   # 월드프레임 -> CGameUI -> 화면에 떠 있는 리더보드(CLeaderboard) / 프레임이 보이는가(0x40)
+OFF_BOARD_LIST, OFF_LIST_FIRST = 0x2b0, 0x4d0      # 리더보드 -> 줄 목록(CLeaderboardList) -> 첫 줄 마디
+OFF_LINE_TEXT, OFF_REP_TEXT = 0xa0, 0x38           # 줄 물체(CLeaderboardItemData) -> 글자 물체(CStringRep) -> 글자
+# 유틸보드의 줄 머리 -> 페이지가 쓰는 이름. 값은 게임에서 '유틸 갱신'을 눌렀을 때의 것이다 (게임이 그때만 고쳐 쓴다).
+BOARD_KEYS = (('방어력 감소 합계', '방깍'), ('발동형 방어력 감소', '발동방깍'), ('오라형 이동속도 감소', '이감'), ('발동형 이동속도 감소', '발동이감'))
+
+
+def board_stats(lines):
+    """유틸보드 줄들 -> {'방깍': 3.0, '이감': 15.0, ...}. 그런 줄이 없으면 None (유틸보드를 안 켰다)."""
+    out = {}
+    for line in lines:
+        line = re.sub(r'\|c[0-9a-fA-F]{8}|\|r', '', line)
+        for head, key in BOARD_KEYS:
+            m = re.match(re.escape(head) + r'\s*:\s*(-?\d+(?:\.\d+)?)', line)
+            if m:
+                out[key] = float(m[1])
+    return out or None
+
+
 # 워크3 가 패치되면 위의 위치들이 밀린다. 판마다 내용으로 확인해서 어긋난 것은 다시 찾고(recal_units·recal_players·recal_links·
 # refind_hover), 찾은 값은 워크3 빌드별로 적어 둔다: 다음에 켤 때 바로 쓴다.
 OFFS_PATH = os.path.join(HERE, 'offsets.json')
-KEPT = ('OFF_TYPE', 'OFF_OWNER', 'OFF_GONE', 'OFF_SLOT', 'OFF_NAME', 'OFF_SEL', 'OFF_CAM', 'OFF_MINIMAP', 'OFF_HOVER')
+KEPT = ('OFF_TYPE', 'OFF_OWNER', 'OFF_GONE', 'OFF_SLOT', 'OFF_NAME', 'OFF_SEL', 'OFF_CAM', 'OFF_MINIMAP', 'OFF_HOVER', 'OFF_UI', 'OFF_BOARD')
 BUILD = None                                # 지금 붙어 있는 워크3 빌드 (실행 파일을 만든 때-크기)
 HOVER_SURE = False                          # '마우스 아래 유닛' 칸이 이 빌드에서 실제로 맞는 것을 본 적이 있는가
 
