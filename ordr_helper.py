@@ -11,7 +11,7 @@
 import collections, ctypes, ctypes.wintypes as W, json, os, re, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.7.42'
+VERSION = '1.7.43'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -75,7 +75,7 @@ def apply_mapping(mp):
 
 state = {'status': '워크3 기다리는 중', 'counts': {}, 'players': {}, 'ts': 0, 'scan': 0,
          'owner': cfg['owner'], 'auto': cfg['auto'], 'managed': [], 'notice': '', 'data_ver': 1,
-         'map_version': cfg['map_version'], 'big_key': cfg.get('big_key', '마우스 옆버튼'), 'big_alpha': cfg.get('big_alpha', 100), 'stay': cfg.get('stay', True), 'version': VERSION, 'frozen': FROZEN, 'update': None, 'startup': False, 'soon': None}
+         'map_version': cfg['map_version'], 'big_key': cfg.get('big_key', '마우스 옆버튼'), 'big_alpha': cfg.get('big_alpha', 100), 'stay': cfg.get('stay', True), 'auto_refresh': cfg.get('auto_refresh', True), 'version': VERSION, 'frozen': FROZEN, 'update': None, 'startup': False, 'soon': None}
 apply_mapping(json.load(open(res_or_local('mapping.json'), encoding='utf-8')))
 COMBOS = {}   # 버튼으로 조합하는 유닛: {결과 sions id: [[버튼을 가진 유닛 코드, 단축키], ...]}
 
@@ -238,6 +238,7 @@ class Game:
         vt = lambda name: (lambda v: v and struct.pack('<Q', v))(self.vtable_of(img, base, name))
         self.ui_vt, self.board_vt, self.list_vt, self.line_vt = vt(b'CGameUI'), vt(b'CLeaderboard'), vt(b'CLeaderboardList'), vt(b'CLeaderboardItemData')
         self.board_look = 0                # 화면의 리더보드 칸을 다시 찾아볼 다음 때 (없을 때 매번 훑지 않게)
+        self.text_vt, self.refresh = vt(b'CTextFrame'), None   # refresh = ('유틸 갱신' 글자 프레임, 그 단추, 설정판): 판마다 한 번 찾는다
         pe = struct.unpack_from('<I', img, 0x3c)[0] if len(img) > 0x40 else 0
         load_offs(f'{struct.unpack_from("<I", img, pe + 8)[0]:x}-{size:x}' if 0 < pe < len(img) - 12 else '?')
         self.pl_off, self.tt = None, []   # 내 플레이어를 가리키는 칸의 위치, CTextTagManager 주소들
@@ -350,33 +351,73 @@ class Game:
         d = self.read(a, 8) if a else None
         return struct.unpack('<Q', d)[0] if d and len(d) == 8 else 0
 
-    def board_lines(self):
-        """화면에 떠 있는 리더보드(이 맵의 '유틸보드')의 줄들을 위에서부터 글자 그대로. 안 떠 있으면 [].
-        월드프레임 -> CGameUI -> 떠 있는 CLeaderboard -> 줄 목록 -> 마디(다음 +8, 줄 물체 +0x10) -> 글자.
-        CGameUI 안의 리더보드 칸이 패치로 밀렸으면 '보이는 리더보드'를 가리키는 칸을 다시 찾는다 (없을 땐 30초에 한 번만)."""
-        global OFF_BOARD
-        if not (self.world and self.ui_vt and self.board_vt and self.list_vt and self.line_vt):
-            return []
+    def game_ui(self):
+        """CGameUI (화면의 모든 프레임의 맨 위 부모). 못 찾으면 0."""
+        if not (self.world and self.ui_vt):
+            return 0
         ui = self.ptr(self.world[0] + OFF_UI)
         if self.read(ui, 8) != self.ui_vt:
             off = self.field(self.world[0], self.ui_vt, OFF_UI, 0x200)
             if off is None:
-                return []
+                return 0
             set_offs(OFF_UI=off)
             ui = self.ptr(self.world[0] + off)
+        return ui
+
+    def frame_rect(self, f):
+        """프레임이 화면에서 차지하는 자리 (아래, 왼, 위, 오른). 말이 안 되는 값이면 None."""
+        d = self.read(f + OFF_RECT, 16) if f else None
+        r = struct.unpack('<4f', d) if d and len(d) == 16 else None
+        return r if r and all(v == v and -0.5 < v < 1.5 for v in r) and r[2] > r[0] and r[3] > r[1] else None
+
+    def refresh_frames(self):
+        """톱니바퀴 설정판의 '유틸 갱신': (글자 프레임, 그 단추, 설정판). 판마다 한 번 찾아 둔다 (글자 프레임 수백 개를 훑는다). 없으면 None."""
+        ui, want = self.game_ui(), REFRESH_TEXT.encode() + b'\0'
+        says = lambda t: (self.read(self.ptr(t + OFF_FRAME_TEXT), len(want)) or b'') == want
+        if self.refresh and self.read(self.refresh[0], 8) == self.text_vt and says(self.refresh[0]):
+            return self.refresh
+        self.refresh = None
+        for base, size in sorted(self.regions()) if ui and self.text_vt else ():
+            if size > 8 << 20:
+                continue
+            d = self.read(base, size)
+            i = d.find(self.text_vt) if d else -1
+            while i >= 0:
+                t = base + i
+                if i % 8 == 0 and says(t):
+                    button = self.ptr(t + OFF_PARENT)
+                    panel = self.ptr(button + OFF_PARENT)
+                    if self.ptr(panel + OFF_PARENT) == ui:   # 지난 판의 찌꺼기가 아니라 지금 화면의 것
+                        self.refresh = (t, button, panel)
+                        return self.refresh
+                i = d.find(self.text_vt, i + 1)
+        return None
+
+    def board_frame(self):
+        """화면에 떠 있는 리더보드 프레임(CLeaderboard). 안 떠 있으면 0.
+        CGameUI 안의 리더보드 칸이 패치로 밀렸으면 '보이는 리더보드'를 가리키는 칸을 다시 찾는다 (없을 땐 30초에 한 번만)."""
+        ui = self.game_ui()
+        if not (ui and self.board_vt):
+            return 0
         shown = lambda b: 0x10000 < b < 0x7FFFFFFFFFFF and self.read(b, 8) == self.board_vt and (self.read(b + OFF_SHOWN, 1) or b'\0')[0] & 0x40
         board = self.ptr(ui + OFF_BOARD)
         if not shown(board):
             if self.read(board, 8) == self.board_vt or time.time() < self.board_look:
-                return []                  # 리더보드가 있는데 감춰져 있거나, 방금 찾아봤는데 없었다
+                return 0                   # 리더보드가 있는데 감춰져 있거나, 방금 찾아봤는데 없었다
             self.board_look = time.time() + 30
             d = self.read(ui, 0x1000) or b''
             hit = [o for o in range(0, len(d) - 7, 8) if shown(struct.unpack_from('<Q', d, o)[0])]
             if len(hit) != 1:
-                return []
+                return 0
             set_offs(OFF_BOARD=hit[0])
             board = self.ptr(ui + hit[0])
-        lst = self.ptr(board + OFF_BOARD_LIST)
+        return board
+
+    def board_lines(self):
+        """화면에 떠 있는 리더보드(이 맵의 '유틸보드')의 줄들을 위에서부터 글자 그대로. 안 떠 있으면 [].
+        월드프레임 -> CGameUI -> 떠 있는 CLeaderboard -> 줄 목록 -> 마디(다음 +8, 줄 물체 +0x10) -> 글자."""
+        board = self.board_frame()
+        lst = self.ptr(board + OFF_BOARD_LIST) if board and self.list_vt and self.line_vt else 0
         if self.read(lst, 8) != self.list_vt:
             return []
         out, node = [], self.ptr(lst + OFF_LIST_FIRST)
@@ -607,6 +648,10 @@ def read_names(g):
             traceback.print_exc(); return
         if names or not g.alive():
             state['names'] = {o: n for o, n in names}
+            try:
+                g.refresh_frames()               # '유틸 갱신' 단추도 미리 찾아 둔다 (5초쯤): 조합이 끝난 자리에서 찾느라 멈칫하지 않게
+            except Exception:
+                traceback.print_exc()
             return
         time.sleep(20)
 
@@ -1220,6 +1265,9 @@ OFF_MINIMAP, OFF_MM_RECT, OFF_MM_SCREEN, OFF_MM_WORLD = 0x2f0, 0x1e0, 0x234, 0x2
 OFF_UI, OFF_BOARD, OFF_SHOWN = 0x40, 0x640, 0x20   # 월드프레임 -> CGameUI -> 화면에 떠 있는 리더보드(CLeaderboard) / 프레임이 보이는가(0x40)
 OFF_BOARD_LIST, OFF_LIST_FIRST = 0x2b0, 0x4d0      # 리더보드 -> 줄 목록(CLeaderboardList) -> 첫 줄 마디
 OFF_LINE_TEXT, OFF_REP_TEXT = 0xa0, 0x38           # 줄 물체(CLeaderboardItemData) -> 글자 물체(CStringRep) -> 글자
+OFF_PARENT, OFF_RECT, OFF_FRAME_TEXT = 0x40, 0x1e0, 0x4c8   # 프레임 -> 부모 / 화면 속 자리(아래, 왼, 위, 오른; 가로 0~0.8·세로 0~0.6) / CTextFrame 의 글자
+REFRESH_TEXT = '유틸 갱신'                          # 톱니바퀴 설정판 안의 단추 글자
+GEAR_AT = (0.0083, 0.0334)                          # 톱니바퀴 한가운데 = 설정판의 (왼쪽, 위) 에서 이만큼 (2.323 의 배치)
 # 유틸보드의 줄 머리 -> 페이지가 쓰는 이름. 값은 게임에서 '유틸 갱신'을 눌렀을 때의 것이다 (게임이 그때만 고쳐 쓴다).
 BOARD_KEYS = (('방어력 감소 합계', '방깍'), ('발동형 방어력 감소', '발동방깍'), ('오라형 이동속도 감소', '이감'), ('발동형 이동속도 감소', '발동이감'))
 
@@ -1307,9 +1355,68 @@ def game_steps(steps):
         if not g or not g.world or not g.alive():
             return '게임 중이 아니에요'
         try:
-            return _steps(g, steps)
+            r = _steps(g, steps)
+            if r == 'ok' and cfg.get('auto_refresh', True) and state.get('board') and LIVE.get('refresh_bad', 0) < 2:
+                refresh_board(g)                 # 조합으로 유닛이 바뀌었다: 마우스를 쥔 김에 게임의 유틸 갱신도 눌러 둔다
+            return r
         finally:
             LIVE['done'] = time.time()
+    finally:
+        chat_lock.release()
+
+
+def refresh_board(g):
+    """게임에서 '유틸 갱신'을 눌러 준다 (chat_lock 을 쥔 채로 부른다). 큰 창은 잠깐 감추고, 마우스는 제자리로. 결과 글자를 돌려준다.
+    게임에 대기시간이 있어서 8초 안에 또 부르면 건너뛴다."""
+    if time.time() - LIVE.get('refreshed', 0) < 8:
+        return '방금 갱신했어요'
+    old, big, prev = W.POINT(), big_window(), u32.GetForegroundWindow()
+    big = big if big_shown(big) else None
+    u32.GetCursorPos(ctypes.byref(old))
+    if big:
+        big_show(big, False)
+    try:
+        ui = Clicker(g, g.local_slot())
+        r = ui.err or ui.refresh_board()
+        if r == 'ok':
+            LIVE['refreshed'], LIVE['refresh_bad'] = time.time(), 0
+        else:
+            print('  유틸 갱신:', r)
+            LIVE['refresh_bad'] = LIVE.get('refresh_bad', 0) + 1
+            if LIVE['refresh_bad'] == 2:         # 두 번 내리 안 됐다: 알아서 누르는 것은 그만둔다 (엉뚱한 데를 자꾸 누르면 안 된다)
+                state['notice'] = f'유틸 갱신을 알아서 누르는 것을 멈췄어요: {r}'
+        return r
+    except Halt:
+        return 'Esc 로 멈췄어요'
+    except Exception as e:
+        traceback.print_exc()
+        return f'유틸 갱신을 누르지 못했어요: {e}'
+    finally:                                     # 갱신은 곁다리 일이다: 큰 창·보던 창·마우스를 전부 하던 대로 돌려놓는다
+        if big:
+            big_show(big, True)
+        gh, r = game_window(g.pid), W.RECT()
+        if prev and prev != gh and u32.GetForegroundWindow() == gh:
+            front(prev)
+            for _ in range(10):
+                if u32.GetForegroundWindow() != gh:
+                    break
+                time.sleep(0.05)
+        u32.GetWindowRect(gh, ctypes.byref(r))
+        if u32.GetForegroundWindow() != gh or (r.left <= old.x < r.right and r.top <= old.y < r.bottom):
+            u32.SetCursorPos(old.x, old.y)       # 게임이 앞인데 마우스만 밖으로 보내면 게임이 화면을 그쪽으로 민다
+
+
+def refresh_now(q_auto=False):
+    """페이지에서 부르는 유틸 갱신 (조합 중이 아닐 때만). q_auto = 사람이 누른 게 아니라 페이지가 알아서 부른 것."""
+    g = LIVE.get('g')
+    if not g or not g.world or not g.alive():
+        return '게임 중이 아니에요'
+    if q_auto and LIVE.get('refresh_bad', 0) >= 2:
+        return '알아서 누르기는 멈춰 있어요'
+    if not chat_lock.acquire(blocking=False):
+        return '조합하는 중이에요'
+    try:
+        return refresh_board(g)
     finally:
         chat_lock.release()
 
@@ -1518,7 +1625,67 @@ class Clicker:
     def seen(self, s):
         # 화면에 보이는 데 전부 (맨 위 자원 줄, 아래 조작판·미니맵만 뺀다). 유닛 위에 마우스가 올라갔는지 게임에서 확인하고
         # 누를 때는 여기면 된다: 점수판에 가려 있으면 확인에서 걸러진다. 화면에 보이는 유닛 때문에 화면을 옮기지 않으려는 것.
-        return s and self.rc.right * 0.03 < s[0] < self.rc.right * 0.97 and self.rc.bottom * 0.09 < s[1] < self.rc.bottom * 0.74
+        # 유틸보드(리더보드)는 예외: 그 밑의 유닛에 마우스는 올라가는데 클릭은 보드가 먹는다 -> 그 자리는 '안 보이는 데'로 친다.
+        return (s and self.rc.right * 0.03 < s[0] < self.rc.right * 0.97 and self.rc.bottom * 0.09 < s[1] < self.rc.bottom * 0.74
+                and not self.on_board(s))
+
+    def px(self, fx, fy):
+        """프레임 좌표(가로 0~0.8, 세로 0~0.6; 넓은 화면은 양옆으로 더 나간다) -> 창 안의 픽셀. 화면 범위는 미니맵 물체가 들고 있다."""
+        d = self.g.read(self.rq(self.g.world[0] + OFF_MINIMAP) + OFF_MM_SCREEN, 12)
+        if not d or len(d) < 12:
+            return None
+        sl, st, sr = struct.unpack('<3f', d)
+        if not (sl <= 0 < sr and 0.5 < st < 0.7):
+            return None
+        return ((fx - sl) / (sr - sl) * self.rc.right, (1 - fy / st) * self.rc.bottom)
+
+    def on_board(self, s):
+        """화면 좌표 s 가 유틸보드 위(둘레 12픽셀 포함)인가. 보드가 안 떠 있으면 False."""
+        if not hasattr(self, 'board_box'):               # 한 번만 읽는다 (Clicker 는 단계마다 새로 만든다)
+            r = self.g.frame_rect(self.g.board_frame())
+            a, b = (self.px(r[1], r[2]), self.px(r[3], r[0])) if r else (None, None)
+            self.board_box = (a[0] - 12, a[1] - 12, b[0] + 12, b[1] + 12) if a and b else None
+        k = self.board_box
+        return bool(k) and k[0] < s[0] < k[2] and k[1] < s[1] < k[3]
+
+    def tap_ui(self, fx, fy):
+        """프레임 좌표에 있는 화면 단추를 누른다 (유닛이 아니라 설정판 같은 것)."""
+        s = self.px(fx, fy)
+        if not s or not self.move(s, anywhere=True):
+            return False
+        time.sleep(0.08)
+        self.press()
+        return True
+
+    def refresh_board(self):
+        """게임의 톱니바퀴 -> '유틸 갱신'을 눌러 유틸보드 값을 새로 고친다. 설정판이 닫혀 있었으면 열었다가 다시 닫는다.
+        톱니바퀴를 눌렀는데 설정판이 열린 것이 확인되지 않으면 거기서 그만둔다 (엉뚱한 데를 이어서 누르지 않는다)."""
+        g = self.g
+        fr = g.refresh_frames()
+        if not fr:
+            return '게임에서 유틸 갱신 단추를 못 찾았어요'
+        text, button, panel = fr
+        br, pr = g.frame_rect(button), g.frame_rect(panel)
+        if not br or not pr:
+            return '유틸 갱신 단추의 자리를 못 읽었어요'
+        is_open = lambda: bool((g.read(text + OFF_SHOWN, 1) or b'\0')[0] & 0x40)
+        gear, opened = (pr[1] + GEAR_AT[0], pr[2] + GEAR_AT[1]), False
+        if not is_open():
+            if not self.tap_ui(*gear):
+                return '톱니바퀴를 누르지 못했어요'
+            for _ in range(14):
+                time.sleep(0.05)
+                if is_open():
+                    break
+            else:
+                return '톱니바퀴를 눌렀는데 설정판이 열리지 않았어요'
+            opened = True
+        ok = self.tap_ui((br[1] + br[3]) / 2, (br[0] + br[2]) / 2)
+        time.sleep(0.15)
+        if opened:
+            self.tap_ui(*gear)
+        print(f'  유틸 갱신 누름: {"됨" if ok else "못 누름"} (설정판을 {"열었다 닫음" if opened else "열려 있었음"})')
+        return 'ok' if ok else '유틸 갱신을 누르지 못했어요'
 
     def cam(self):
         """카메라가 보는 점 (x, y)."""
@@ -1694,11 +1861,11 @@ class Clicker:
             return 0x26 if dy > 150 else 0x28 if dy < -150 else 0x27 if dx > 150 else 0x25 if dx < -150 else None
         self.steer(want, 3)
 
-    def move(self, s, wide=False):
+    def move(self, s, wide=False, anywhere=False):
         """마우스를 화면 좌표로 옮긴다. 조작판·점수판 쪽, 다른 창에 가려진 곳, 게임이 앞에 없을 때는 안 옮긴다(False).
-        wide = 유닛 위에 올라갔는지 게임에서 확인하고 누를 때: 화면에 보이는 데면 된다."""
+        wide = 유닛 위에 올라갔는지 게임에서 확인하고 누를 때: 화면에 보이는 데면 된다. anywhere = 화면 단추를 누를 때."""
         halted()
-        if not (self.seen if wide else self.safe)(s):
+        if not (anywhere or (self.seen if wide else self.safe)(s)):
             return False
         pt = W.POINT(int(s[0]), int(s[1]))
         u32.ClientToScreen(self.h, ctypes.byref(pt))
@@ -2286,6 +2453,12 @@ class Handler(BaseHTTPRequestHandler):
             h = big_window()
             if big_shown(h):
                 big_show(h, True)
+            self._send(200, b'ok', 'text/plain')
+        elif path == '/refresh':                    # 게임에서 톱니바퀴 -> 유틸 갱신을 대신 누른다
+            self._send(200, refresh_now(q == 'auto').encode(), 'text/plain; charset=utf-8')
+        elif path == '/autorefresh' and q in ('v=0', 'v=1'):   # 조합 뒤·유닛이 바뀐 뒤 유틸 갱신을 알아서 누를지
+            cfg['auto_refresh'] = state['auto_refresh'] = q == 'v=1'
+            save_cfg()
             self._send(200, b'ok', 'text/plain')
         elif path == '/stay' and q in ('v=0', 'v=1'):   # 조합이 끝난 뒤 게임 창에 남을지(1), 누르던 창으로 돌아갈지(0)
             cfg['stay'] = state['stay'] = q == 'v=1'
