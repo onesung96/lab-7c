@@ -11,7 +11,7 @@
 import collections, ctypes, ctypes.wintypes as W, json, os, re, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.7.43'
+VERSION = '1.7.44'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -1266,7 +1266,8 @@ OFF_UI, OFF_BOARD, OFF_SHOWN = 0x40, 0x640, 0x20   # 월드프레임 -> CGameUI 
 OFF_BOARD_LIST, OFF_LIST_FIRST = 0x2b0, 0x4d0      # 리더보드 -> 줄 목록(CLeaderboardList) -> 첫 줄 마디
 OFF_LINE_TEXT, OFF_REP_TEXT = 0xa0, 0x38           # 줄 물체(CLeaderboardItemData) -> 글자 물체(CStringRep) -> 글자
 OFF_PARENT, OFF_RECT, OFF_FRAME_TEXT = 0x40, 0x1e0, 0x4c8   # 프레임 -> 부모 / 화면 속 자리(아래, 왼, 위, 오른; 가로 0~0.8·세로 0~0.6) / CTextFrame 의 글자
-REFRESH_TEXT = '유틸 갱신'                          # 톱니바퀴 설정판 안의 단추 글자
+OFF_HIDDEN = 0x150                                  # 프레임이 감춰져 있으면 이 바이트의 0x02 가 켜진다 (설정판을 여닫는 동안 본 값: 글자 프레임 0x2e <-> 0x2c)
+REFRESH_TEXT = '유틸 갱신'                         # 톱니바퀴 설정판 안의 단추 글자
 GEAR_AT = (0.0083, 0.0334)                          # 톱니바퀴 한가운데 = 설정판의 (왼쪽, 위) 에서 이만큼 (2.323 의 배치)
 # 유틸보드의 줄 머리 -> 페이지가 쓰는 이름. 값은 게임에서 '유틸 갱신'을 눌렀을 때의 것이다 (게임이 그때만 고쳐 쓴다).
 BOARD_KEYS = (('방어력 감소 합계', '방깍'), ('발동형 방어력 감소', '발동방깍'), ('오라형 이동속도 감소', '이감'), ('발동형 이동속도 감소', '발동이감'))
@@ -1668,7 +1669,7 @@ class Clicker:
         br, pr = g.frame_rect(button), g.frame_rect(panel)
         if not br or not pr:
             return '유틸 갱신 단추의 자리를 못 읽었어요'
-        is_open = lambda: bool((g.read(text + OFF_SHOWN, 1) or b'\0')[0] & 0x40)
+        is_open = lambda: not (g.read(text + OFF_HIDDEN, 1) or b'\xff')[0] & 0x02
         gear, opened = (pr[1] + GEAR_AT[0], pr[2] + GEAR_AT[1]), False
         if not is_open():
             if not self.tap_ui(*gear):
