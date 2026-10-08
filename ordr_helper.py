@@ -11,7 +11,7 @@
 import collections, ctypes, ctypes.wintypes as W, json, os, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.7.40'
+VERSION = '1.7.41'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -24,10 +24,10 @@ for _s in (sys.stdout, sys.stderr):
     except Exception: pass
 EXE = 'Warcraft III.exe'
 VT_RVA = 0x2792E78        # CUnit vtable (RTTI .?AVCUnit@@), Reforged 3.0.0.24268 — 못 찾을 때만 쓰는 예비값
-# typeId, 주인 플레이어 번호, 1 = 제거됨(조합 재료로 사라짐).
-# 주인은 +0x1c0. +0x58 은 주인이 아니라 '색 번호'다: 혼자 하는 판에선 둘이 같지만, 여럿이 하는 판에선 맵이 색을 바꿔서
+# typeId, 주인 플레이어 번호, 1 = 제거됨(조합 재료로 사라짐; 3.0.1.24342 에선 +0x27c, 그 앞 +0x278 도 같은 유닛들에서 0 이 아니지만 값이 제각각이다).
+# 주인은 +0x1c4 (3.0.1.24342; 그 전엔 +0x1c0). +0x58 은 주인이 아니라 '색 번호'다: 혼자 하는 판에선 둘이 같지만, 여럿이 하는 판에선 맵이 색을 바꿔서
 # (2번 플레이어의 유닛이 색 3) 내 유닛이 남의 슬롯으로 잡혔다.
-OFF_TYPE, OFF_OWNER, OFF_GONE = 0x70, 0x1c0, 0x274
+OFF_TYPE, OFF_OWNER, OFF_GONE = 0x70, 0x1c4, 0x27c   # 패치로 밀리면 recal_units 가 다시 찾는다
 SZ = 0x400             # 객체에서 읽는 길이 (패치로 필드가 밀려도 넉넉하게)
 CHUNK = 1 << 20           # ponytail: 1MB reads + 10ms nap every 16MB; tune if the game hitches
 NAP_EVERY, NAP = 16, 0.01
@@ -233,6 +233,10 @@ class Game:
         self.pl_vt = struct.pack('<Q', pl) if pl else None
         tt, sel = self.vtable_of(img, base, b'CTextTagManager'), self.vtable_of(img, base, b'CSelectionWar3')
         self.tt_vt, self.sel_vt = tt and struct.pack('<Q', tt), sel and struct.pack('<Q', sel)
+        cam, mm = self.vtable_of(img, base, b'CCamera'), self.vtable_of(img, base, b'CMinimap')
+        self.cam_vt, self.mm_vt = cam and struct.pack('<Q', cam), mm and struct.pack('<Q', mm)
+        pe = struct.unpack_from('<I', img, 0x3c)[0] if len(img) > 0x40 else 0
+        load_offs(f'{struct.unpack_from("<I", img, pe + 8)[0]:x}-{size:x}' if 0 < pe < len(img) - 12 else '?')
         self.pl_off, self.tt = None, []   # 내 플레이어를 가리키는 칸의 위치, CTextTagManager 주소들
         self.res = None                    # 내 자원 기록(골드·목재)이 줄지어 있는 곳
         self.world = None        # (CWorldFrameWar3 주소, 유닛 목록 {개수, 주소, 용량} 의 위치)
@@ -324,6 +328,44 @@ class Game:
                 return p
         return None
 
+    def field(self, obj, vt, at, span=0x800):
+        """obj 안에서 'vt 클래스의 물체'를 가리키는 칸의 위치. 지금 값(at)부터 가까운 순으로 본다: 안 밀렸으면 한 번에 끝난다."""
+        d = vt and obj and self.read(obj, span) or b''
+        for off in sorted(range(0, len(d) - 7, 8), key=lambda o: abs(o - at)):
+            p = struct.unpack_from('<Q', d, off)[0]
+            if 0x10000 < p < 0x7FFFFFFFFFFF and p % 8 == 0 and self.read(p, 8) == vt:
+                return off
+        return None
+
+    def recal_links(self):
+        """월드프레임 -> 카메라·미니맵, 내 플레이어 -> 선택 물체를 가리키는 칸이 맞는지 보고, 밀렸으면 다시 찾는다."""
+        w, pl = self.world[0], self.local_player()
+        set_offs(OFF_CAM=self.field(w, self.cam_vt, OFF_CAM), OFF_MINIMAP=self.field(w, self.mm_vt, OFF_MINIMAP),
+                 OFF_SEL=self.field(pl, self.sel_vt, OFF_SEL, 0x400))
+
+    def name_at(self, d, off):
+        """플레이어 물체(앞부분 d)의 off 칸이 (이름 주소, 길이) 이면 그 이름."""
+        ptr, n = struct.unpack_from('<QQ', d, off)
+        nm = self.read(ptr, n) if 0 < n <= 64 and 0x10000 < ptr < 0x7FFFFFFFFFFF else None
+        try:
+            return nm.decode('utf-8') if nm and len(nm) == n and min(nm) >= 32 else None
+        except UnicodeDecodeError:
+            return None
+
+    def recal_players(self, pls):
+        """플레이어 물체들(앞부분)에서 슬롯 번호 칸과 이름 칸이 맞는지 보고, 밀렸으면 가까운 데서 다시 찾는다.
+        슬롯 번호 = 물체마다 값이 다 다르고 32 미만인 바이트. 이름 = (주소, 길이) 가 읽히는 글자인 칸 (둘레 0x20 안에 하나뿐일 때만)."""
+        slot_ok = lambda o: len({d[o] for d in pls}) >= min(len(pls), 24) and max(d[o] for d in pls) < 32
+        named = lambda o: any(self.name_at(d, o) for d in pls)
+        new = {}
+        if len(pls) >= 8 and not slot_ok(OFF_SLOT):
+            c = [o for o in range(8, 0x1f8) if slot_ok(o)]
+            new['OFF_SLOT'] = min(c, key=lambda o: abs(o - OFF_SLOT)) if c else None
+        if pls and not named(OFF_NAME):
+            c = [o for o in range(max(8, OFF_NAME - 0x20), min(0x1f0, OFF_NAME + 0x28), 8) if named(o)]
+            new['OFF_NAME'] = c[0] if len(c) == 1 else None
+        set_offs(**new)
+
     def local_slot(self):
         p = self.local_player()
         s = p and self.read(p + OFF_SLOT, 1)
@@ -383,10 +425,10 @@ class Game:
         return None
 
     def find_names(self):
-        """플레이어 이름 [(슬롯, 이름)]. CPlayerWar3: 슬롯 번호 +0x6a, 이름 주소 +0xa0, 길이 +0xa8 (3.0.0.24268).
+        """플레이어 이름 [(슬롯, 이름)]. CPlayerWar3: 슬롯 번호 OFF_SLOT, 이름 (주소, 길이) OFF_NAME — 패치로 밀리면 여기서 다시 찾는다.
         사람 플레이어만 이름이 있다. 1MB 이하 구역만 훑어서 6초쯤 걸린다 -> 판마다 한 번만.
         같은 길에 CTextTagManager(화면 변환 행렬을 가진 물체)도 찾아 둔다."""
-        out, naps, tt, res = [], 0, [], []
+        out, naps, tt, res, pls = [], 0, [], [], []
         for base, size in sorted(self.regions()):
             if size > 1 << 20 or not self.pl_vt:
                 continue
@@ -396,11 +438,8 @@ class Game:
                 time.sleep(NAP)
             i = d.find(self.pl_vt) if d else -1
             while i >= 0:
-                if i % 8 == 0 and i + 0xb0 <= len(d):
-                    ptr, n = struct.unpack_from('<QQ', d, i + 0xa0)
-                    nm = self.read(ptr, n) if 0 < n <= 64 else None
-                    if nm and len(nm) == n and d[i + 0x6a] < 24:
-                        out.append((d[i + 0x6a], nm.decode('utf-8', 'replace')))
+                if i % 8 == 0:
+                    pls.append(d[i:i + 0x200].ljust(0x200, b'\0'))
                 i = d.find(self.pl_vt, i + 1)
             i = d.find(self.tt_vt) if d and self.tt_vt else -1
             while i >= 0:
@@ -413,6 +452,11 @@ class Game:
                     res.append(base + i)
                 i = d.find(RES_SIG[0], i + 1)
         self.tt = tt
+        self.recal_players(pls)
+        for d in pls:
+            nm = self.name_at(d, OFF_NAME)
+            if nm and d[OFF_SLOT] < 24:
+                out.append((d[OFF_SLOT], nm))
         # ponytail: 이 기록은 혼자 하는 판에서만 내 것으로 확인됐다. 여럿이 하는 판에서도 하나만 나오는데 남의 값이었다
         # (목재 5개가 있는데 1개로 읽어 조합을 막음) -> 사람이 나 혼자일 때만 쓴다. 여럿일 때 내 자원이 어디 있는지는 아직 못 찾았다.
         self.res = res[0] if len(res) == 1 and len({n for _, n in out}) == 1 else None
@@ -477,19 +521,34 @@ class Game:
         return hit
 
 
-def fix_offsets(samples):
-    """유닛 객체는 많은데 아는 유닛 코드가 하나도 안 잡히면: 코드가 가장 많이 들어 있는 위치를 typeId 로 다시 잡는다.
-    주인·제거 표시 위치는 typeId 에서 같은 거리만큼 옮겨졌다고 가정한다(주인 +0x150, 제거 표시 +0x204)."""
-    global OFF_TYPE, OFF_OWNER, OFF_GONE
-    best = max(range(0, SZ - 4, 4), key=lambda off: sum(o[off:off + 4] in CODES for o in samples))
-    hits = sum(o[best:best + 4] in CODES for o in samples)
-    if hits < len(samples) * 0.1 or best == OFF_TYPE:
-        state['notice'] = '워크3 업데이트로 메모리 구조가 바뀐 것 같아요. 유닛을 못 찾고 있어요 (Claude에게 알려 주세요)'
+def recal_units(samples):
+    """판에 들어갈 때마다: 유닛 안의 '종류·주인·사라짐' 칸이 맞는지 내용으로 보고, 워크3 패치로 밀렸으면 다시 찾는다.
+    종류 = 아는 유닛 코드가 가장 많이 든 칸. 주인 = 전부 28 미만이고 값이 셋 넘게 섞여 있고 전시용 컴퓨터(7번)가 많은 칸.
+    사라짐 = 주인과 같은 만큼 밀렸다고 보고, 깃발처럼 값이 두세 가지뿐인지 확인(아니면 가까운 깃발).
+    같은 것이 여럿이면 지금 값에서 가까운 칸: 안 밀렸으면 그대로다. 못 찾으면 False.
+    판 초반엔 죽은 유닛이 없어 '사라짐' 칸은 옆 칸과 구별이 안 된다 -> 1분마다 다시 봐서, 죽은 유닛이 생긴 뒤 바로잡는다.
+    주인 칸은 '거의 전부(98%)'가 28 미만이면 된다: 지워지는 중인 유닛 하나 때문에 색 번호 칸(+0x58)으로 옮겨 가면 안 된다."""
+    n = len(samples)
+    near = lambda c, at: min(c, key=lambda o: abs(o - at))
+    val = lambda o: [struct.unpack_from('<I', s, o)[0] for s in samples]
+    hits = {o: sum(s[o:o + 4] in CODES for s in samples) for o in range(8, SZ - 4, 4)}
+    top = max(hits.values())
+    if top < max(8, n * 0.1):
         return False
-    shift = best - OFF_TYPE
-    OFF_TYPE, OFF_OWNER, OFF_GONE = best, OFF_OWNER + shift, OFF_GONE + shift
-    state['notice'] = f'워크3 업데이트 감지: 유닛 위치를 다시 찾았어요 (+{shift:#x}). 숫자가 이상하면 알려 주세요'
-    print(state['notice'])
+    kind = near([o for o, h in hits.items() if h >= top * 0.9], OFF_TYPE)
+    owners = [o for o in range(8, SZ - 4, 4) for v in [val(o)] if sum(x < 28 for x in v) >= n * 0.98 and len({x for x in v if x < 28}) >= 3 and v.count(7) >= n * 0.1]
+    if not owners:
+        return False
+    owner = near(owners, OFF_OWNER)
+    flag = lambda o: 8 <= o < SZ - 4 and len(set(val(o))) <= 3
+    gone = OFF_GONE + owner - OFF_OWNER
+    if not flag(gone):
+        flags = [o for o in range(gone - 0x40, gone + 0x44, 4) if flag(o)]
+        if not flags:
+            return False
+        gone = near(flags, gone)
+    if set_offs(OFF_TYPE=kind, OFF_OWNER=owner, OFF_GONE=gone):
+        state['notice'] = '워크3 가 업데이트돼서 유닛 읽는 위치를 다시 찾았어요. 숫자가 이상하면 알려 주세요'
     return True
 
 
@@ -573,7 +632,7 @@ def pieces_of(regions):
 def run_list_mode(g):
     """게임의 유닛 목록을 직접 읽는 방식. 목록이 없어지면(판 끝·프로세스 종료) 돌아간다."""
     state['status'] = '연결됨'
-    empty_since, bad, me = None, 0, None
+    empty_since, check_at, me = None, 0, None
     LIVE['g'] = g
     threading.Thread(target=read_names, args=(g,), daemon=True).start()
     while g.alive():
@@ -581,14 +640,13 @@ def run_list_mode(g):
         found = g.world_units()
         if found is None:
             return
-        if not found and len(g.samples) > 100:          # 유닛은 많은데 아는 코드가 없다 = 워크3 패치로 필드가 밀림
-            bad += 1
-            if bad > 8 and not fix_offsets(g.samples):
-                return
-        else:
-            bad = 0
-        if me is None:
-            me = g.local_slot()
+        if t0 >= check_at and len(g.samples) >= 100:    # 판 시작 때와 그 뒤 1분마다: 워크3 패치로 칸이 밀렸는지 보고, 밀렸으면 다시 찾는다
+            check_at, was = t0 + 60, (OFF_TYPE, OFF_OWNER, OFF_GONE)
+            if not recal_units(g.samples) and not found:
+                state['notice'] = '워크3 업데이트로 메모리 구조가 바뀐 것 같아요. 유닛을 못 찾고 있어요 (Claude에게 알려 주세요)'
+            if was != (OFF_TYPE, OFF_OWNER, OFF_GONE):
+                continue                                # 위치가 바뀌었다: 이번에 읽은 것은 버리고 다시 읽는다
+        me = g.local_slot()                             # 판마다가 아니라 매번: 이름을 읽다가 슬롯 칸을 다시 찾았을 수 있다
         g.me = state['owner']
         publish(found, me)
         state['soon'] = g.reward(state['owner'])
@@ -652,7 +710,7 @@ def tracker():
                 return pieces_of(regs), hot, found
 
             seen, hot, found = full_scan()
-            if not found and g.objs > 100 and fix_offsets(g.samples):   # 워크3 패치로 필드 위치가 바뀐 경우
+            if not found and g.objs > 100 and recal_units(g.samples):   # 워크3 패치로 필드 위치가 바뀐 경우
                 seen, hot, found = full_scan()
             publish(found)
             state['status'] = '연결됨'
@@ -1096,17 +1154,60 @@ def focus_game():
     return '게임 창을 앞으로 못 가져왔어요. 게임 화면을 한 번 누른 뒤 다시 해 주세요'
 
 
-# 3.0.0.24268 기준 위치. 하나라도 어긋나면 확인 단계에서 걸려 아무것도 누르지 않는다.
-OFF_SLOT = 0x6a                             # CPlayerWar3: 슬롯 번호
+# 3.0.1.24342 기준 위치. 하나라도 어긋나면 확인 단계에서 걸려 아무것도 누르지 않는다.
+OFF_SLOT, OFF_NAME = 0x66, 0x98             # CPlayerWar3: 슬롯 번호 / 이름 (주소, 그다음 8바이트가 길이)
 RES_STEP = 0xe0                             # 자원 기록 한 칸의 크기. 값(10배)은 칸 +0xb0. 2번 칸 = 골드, 3번 칸 = 목재
 RES_SIG = [struct.pack('<IIQ', k, k, 0) for k in range(1, 9)]   # 칸 머리: 번호 두 번 + 0. 1~8번이 줄지어 있어야 진짜다
 OFF_SEL_COUNT = 0x3a8   # 선택 물체 -> 지금 골라진 유닛 수 (+0x398 머리, +0x3a0 꼬리, 그다음이 개수; 2026-10-04 확인)
-OFF_SEL, OFF_SEL_NOW, OFF_SEL_SYNC = 0x168, 0x3b0, 0x348   # 플레이어 -> 선택 물체 -> 방금 고른 유닛 / 게임이 확정한 유닛
+OFF_SEL, OFF_SEL_NOW, OFF_SEL_SYNC = 0x160, 0x3b0, 0x348   # 플레이어 -> 선택 물체 -> 방금 고른 유닛 / 게임이 확정한 유닛
 OFF_SPRITE, OFF_POS = 0x60, 0x170           # 유닛 -> 그리기 물체 -> 위치 (x, y, z)
 OFF_CAM, OFF_CAM_TARGET, OFF_CAM_DIST = 0x228, 0xc0, 0x108   # CWorldFrameWar3 -> CCamera -> 보는 점 / 거리
 OFF_VP = 0x58                               # CTextTagManager: 화면 변환 행렬
-OFF_HOVER = 0x468                           # CWorldFrameWar3: 지금 마우스 아래에 있는 유닛
+OFF_HOVER = 0x470                           # CWorldFrameWar3: 지금 마우스 아래에 있는 유닛
 OFF_MINIMAP, OFF_MM_RECT, OFF_MM_SCREEN, OFF_MM_WORLD = 0x2f0, 0x1e0, 0x234, 0x290   # 월드프레임 -> CMinimap: 자리(아래,왼,위,오른) / 화면 범위 / 맵 범위
+# 워크3 가 패치되면 위의 위치들이 밀린다. 판마다 내용으로 확인해서 어긋난 것은 다시 찾고(recal_units·recal_players·recal_links·
+# refind_hover), 찾은 값은 워크3 빌드별로 적어 둔다: 다음에 켤 때 바로 쓴다.
+OFFS_PATH = os.path.join(HERE, 'offsets.json')
+KEPT = ('OFF_TYPE', 'OFF_OWNER', 'OFF_GONE', 'OFF_SLOT', 'OFF_NAME', 'OFF_SEL', 'OFF_CAM', 'OFF_MINIMAP', 'OFF_HOVER')
+BUILD = None                                # 지금 붙어 있는 워크3 빌드 (실행 파일을 만든 때-크기)
+HOVER_SURE = False                          # '마우스 아래 유닛' 칸이 이 빌드에서 실제로 맞는 것을 본 적이 있는가
+
+
+def load_offs(build):
+    """이 워크3 빌드에서 전에 찾아 둔 위치가 있으면 그것을 쓴다."""
+    global BUILD, HOVER_SURE
+    BUILD = build
+    try:
+        saved = json.load(open(OFFS_PATH, encoding='utf-8')).get(build, {})
+    except (OSError, ValueError):
+        saved = {}
+    HOVER_SURE = bool(saved.get('HOVER_SURE'))
+    globals().update({k: v for k, v in saved.items() if k in KEPT and isinstance(v, int)})
+
+
+def set_offs(**new):
+    """다시 찾은 위치를 적용하고 적어 둔다 (None 은 '못 찾음'이라 그대로 둔다). 바뀐 것이 있으면 True."""
+    global HOVER_SURE
+    sure = new.pop('HOVER_SURE', HOVER_SURE)
+    moved = {k: v for k, v in new.items() if v is not None and globals()[k] != v}
+    if not moved and sure == HOVER_SURE:
+        return False
+    if moved:
+        print('워크3 패치로 밀린 위치를 다시 찾음: ' + ', '.join(f'{k[4:]} {globals()[k]:#x} -> {v:#x}' for k, v in moved.items()))
+    globals().update(moved)
+    HOVER_SURE = sure
+    try:
+        try:
+            every = json.load(open(OFFS_PATH, encoding='utf-8'))
+        except (OSError, ValueError):
+            every = {}
+        every[BUILD or '?'] = {**{k: globals()[k] for k in KEPT}, 'HOVER_SURE': HOVER_SURE}
+        json.dump(every, open(OFFS_PATH, 'w', encoding='utf-8'))
+    except OSError:
+        pass
+    return bool(moved)
+
+
 MINI_CAL = {}                               # (게임 pid, 창 크기) -> 미니맵 눈금 (px, py, X, Y, kx, ky, 맵 범위)
 # 유닛 종류(코드) -> 그 유닛 몸에서 클릭이 먹는 자리. 맵 위 위치가 아니라 '유닛 발끝에서 얼마나 떨어진 곳을 눌러야 하나'라서
 # 유닛이 어디 서 있든 같다(모델마다 다를 뿐). 카메라 거리 4000 일 때의 픽셀로 적어 두고, 다른 거리에선 비례로 바꿔 쓴다.
@@ -1293,6 +1394,7 @@ class Clicker:
 
     def __init__(self, g, me):
         self.g, self.me, self.err, self.last = g, me, None, 0
+        g.recal_links()
         pl = g.local_player()
         self.sel = pl and self.rq(pl + OFF_SEL)
         if not self.sel or not g.sel_vt or g.read(self.sel, 8) != g.sel_vt:
@@ -1579,6 +1681,16 @@ class Clicker:
         """지금 마우스 아래에 있는 유닛 (게임이 적어 둔 것)."""
         return self.rq(self.g.world[0] + OFF_HOVER)
 
+    def refind_hover(self, ok, was, flux):
+        """워크3 패치 뒤 '마우스 아래 유닛' 칸이 맞는 것을 아직 못 봤을 때만: 마우스를 유닛에 대도 그 칸이 비어 있으면,
+        월드프레임 안에서 마우스를 옮기는 동안 값이 바뀌던 칸(flux; was = 옮기기 전 모습) 가운데 ok 인 유닛을 가리키는 칸을 찾는다.
+        딱 하나면 그 칸이 새 위치다 (골라 둔 유닛처럼 마우스와 상관없이 그대로인 칸은 빠진다)."""
+        d = self.g.read(self.g.world[0], len(was)) or b''
+        flux.update(o for o in range(0, min(len(d), len(was)) - 7, 8) if d[o:o + 8] != was[o:o + 8])
+        ptr = lambda o: struct.unpack_from('<Q', d, o)[0] if o + 8 <= len(d) else 0
+        hit = [o for o in sorted(flux) if 0x10000 < ptr(o) < 0x7FFFFFFFFFFF and ptr(o) % 8 == 0 and ok(ptr(o))]
+        return len(hit) == 1 and (set_offs(OFF_HOVER=hit[0], HOVER_SURE=True) or True)
+
     def point_at(self, p, ok, limit=None, center=False):
         """마우스를 유닛 p 둘레에서 조금씩 옮기며, 게임이 '마우스 아래 유닛'을 ok 인 유닛이라고 할 때까지 찾는다.
         찾으면 True (마우스는 그 자리에 있다). 유닛마다 눌리는 범위가 달라서(나미는 15픽셀 남짓) 좌표만 믿고 누르면 빗나간다.
@@ -1596,7 +1708,15 @@ class Clicker:
         zoom = max(struct.unpack('<f', d)[0], 500) / 4000 if d and len(d) == 4 else 1   # 멀리서 볼수록 같은 거리가 적은 픽셀
         if code in HIT_AT:                        # 이 종류가 지난번에 눌렸던 자리부터 본다: 대개 첫 번에 맞는다
             pts.insert(0, (round(HIT_AT[code][0] / zoom), round(HIT_AT[code][1] / zoom)))
-        on = lambda x, y: self.move((x, y), True) and (time.sleep(0.025) or ok(self.hover()))
+        was, flux = None if HOVER_SURE else self.g.read(self.g.world[0], 0x900), set()
+
+        def on(x, y):
+            if not self.move((x, y), True):
+                return False
+            time.sleep(0.025)
+            if ok(self.hover()):
+                return True
+            return bool(was) and not HOVER_SURE and self.refind_hover(ok, was, flux) and ok(self.hover())
         for dx, dy in pts[:limit]:               # limit: 금방 못 찾으면 그만둘 때 (가까운 자리 몇 군데만 본다)
             x, y = s[0] + dx, s[1] + dy - 15
             if on(x, y) and (time.sleep(0.03) or ok(self.hover())):   # 한 박자 늦게 읽혔을 수 있으니 같은 자리에서 다시 확인
@@ -1612,6 +1732,8 @@ class Clicker:
                     elif not on(x, y):
                         continue
                 self.hit = (code, (round((x - s[0]) * zoom), round((y - s[1] + 15) * zoom)))
+                if not HOVER_SURE:
+                    set_offs(HOVER_SURE=True)        # 이 빌드에서 '마우스 아래 유닛' 칸이 맞는 것을 봤다
                 return True
         return False
 

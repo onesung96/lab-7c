@@ -11,3 +11,4 @@ inject.js
 *.zip
 
 hits.json
+offsets.json
