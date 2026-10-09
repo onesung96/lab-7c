@@ -11,7 +11,7 @@
 import collections, ctypes, ctypes.wintypes as W, json, os, re, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.7.44'
+VERSION = '1.7.45'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -611,7 +611,7 @@ class Game:
 def recal_units(samples):
     """판에 들어갈 때마다: 유닛 안의 '종류·주인·사라짐' 칸이 맞는지 내용으로 보고, 워크3 패치로 밀렸으면 다시 찾는다.
     종류 = 아는 유닛 코드가 가장 많이 든 칸. 주인 = 전부 28 미만이고 값이 셋 넘게 섞여 있고 전시용 컴퓨터(7번)가 많은 칸.
-    사라짐 = 주인과 같은 만큼 밀렸다고 보고, 깃발처럼 값이 두세 가지뿐인지 확인(아니면 가까운 깃발).
+    사라짐 = 주인과 같은 만큼 밀렸다고 보고, 깃발(값이 0/1 뿐이고 0 이 꽤 있음)인지 확인(아니면 가까운 깃발).
     같은 것이 여럿이면 지금 값에서 가까운 칸: 안 밀렸으면 그대로다. 못 찾으면 False.
     판 초반엔 죽은 유닛이 없어 '사라짐' 칸은 옆 칸과 구별이 안 된다 -> 1분마다 다시 봐서, 죽은 유닛이 생긴 뒤 바로잡는다.
     주인 칸은 '거의 전부(98%)'가 28 미만이면 된다: 지워지는 중인 유닛 하나 때문에 색 번호 칸(+0x58)으로 옮겨 가면 안 된다."""
@@ -627,7 +627,9 @@ def recal_units(samples):
     if not owners:
         return False
     owner = near(owners, OFF_OWNER)
-    flag = lambda o: 8 <= o < SZ - 4 and len(set(val(o))) <= 3
+    # 깃발 = 값이 0 아니면 1 뿐이고, 0 이 꽤 있다. '값이 두세 가지뿐'으로만 보면 모든 유닛이 같은 값을 가진 칸(주소의 아래 절반 따위)도
+    # 깃발로 보여서, 3.0.1 -> 3.0.0 으로 되돌아갔을 때 그런 칸을 잡아 전부 '사라짐'으로 읽었다.
+    flag = lambda o: 8 <= o < SZ - 4 and (lambda v: max(v) <= 1 and v.count(0) >= n * 0.3)(val(o))
     gone = OFF_GONE + owner - OFF_OWNER
     if not flag(gone):
         flags = [o for o in range(gone - 0x40, gone + 0x44, 4) if flag(o)]
