@@ -11,7 +11,7 @@
 import collections, ctypes, ctypes.wintypes as W, json, os, re, struct, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1.7.45'
+VERSION = '1.7.46'
 REPO = 'onesung96/lab-7c'   # 새 버전 확인용 깃허브 저장소
 FROZEN = getattr(sys, 'frozen', False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))   # config / cache / 기록 (쓰기 가능)
@@ -75,7 +75,7 @@ def apply_mapping(mp):
 
 state = {'status': '워크3 기다리는 중', 'counts': {}, 'players': {}, 'ts': 0, 'scan': 0,
          'owner': cfg['owner'], 'auto': cfg['auto'], 'managed': [], 'notice': '', 'data_ver': 1,
-         'map_version': cfg['map_version'], 'big_key': cfg.get('big_key', '마우스 옆버튼'), 'big_alpha': cfg.get('big_alpha', 100), 'stay': cfg.get('stay', True), 'auto_refresh': cfg.get('auto_refresh', True), 'version': VERSION, 'frozen': FROZEN, 'update': None, 'startup': False, 'soon': None}
+         'map_version': cfg['map_version'], 'big_key': cfg.get('big_key', '마우스 옆버튼'), 'big_alpha': cfg.get('big_alpha', 100), 'big_dim': cfg.get('big_dim', 0), 'stay': cfg.get('stay', True), 'auto_refresh': cfg.get('auto_refresh', True), 'version': VERSION, 'frozen': FROZEN, 'update': None, 'startup': False, 'soon': None}
 apply_mapping(json.load(open(res_or_local('mapping.json'), encoding='utf-8')))
 COMBOS = {}   # 버튼으로 조합하는 유닛: {결과 sions id: [[버튼을 가진 유닛 코드, 단축키], ...]}
 
@@ -2358,12 +2358,19 @@ def big_shown(h):
 
 def big_show(h, on):
     """큰 창을 보이거나 감춘다. 창을 진짜로 숨기면 브라우저가 화면 그리기를 멈춰서 다시 띄울 때 오래 걸리고 버벅인다
-    -> 창은 그대로 두고 투명하게(+마우스가 통과하게)만 바꾼다. 바로 켜지고 바로 꺼진다."""
+    -> 창은 그대로 두고 투명도(+마우스 통과)만 바꾼다. 켤 때도 완전 불투명(255)까지는 안 간다: 완전히 가리면 끌 때 게임이
+    그 넓은 영역을 한 번에 다시 그려야 해서 게임이 끊긴다. 늘 살짝 비치게 두면 게임은 계속 그려지고 있어 토글 순간이 매끄럽다.
+    끄기 = big_dim(0 이면 완전히 숨김, >0 이면 그 진하기로 흐리게 남김 + 클릭은 게임으로)."""
     ex = u32.GetWindowLongW(h, -20) | 0x80000                    # WS_EX_LAYERED
     if on and u32.IsIconic(h):
         u32.ShowWindow(h, 4)                                     # 최소화돼 있었다: 초점은 뺏지 않고 편다
-    u32.SetWindowLongW(h, -20, (ex & ~0x20) if on else (ex | 0x20))   # WS_EX_TRANSPARENT: 감췄을 땐 클릭이 게임으로 간다
-    u32.SetLayeredWindowAttributes(h, 0, max(60, min(255, int(cfg.get('big_alpha', 100)) * 255 // 100)) if on else 0, 2)
+    dim = max(0, min(80, int(cfg.get('big_dim', 0))))
+    if on:
+        alpha = min(252, max(60, int(cfg.get('big_alpha', 100)) * 255 // 100))   # 252 로 묶어 게임을 완전히 가리지 않음
+    else:
+        alpha = min(200, max(25, dim * 255 // 100)) if dim else 0                # 흐리게 남기거나(0 이상) 완전히 숨김
+    u32.SetWindowLongW(h, -20, (ex & ~0x20) if on else (ex | 0x20))   # WS_EX_TRANSPARENT: 꺼졌을 땐 클릭이 게임으로 간다
+    u32.SetLayeredWindowAttributes(h, 0, alpha, 2)
     if on:
         u32.SetWindowPos(h, W.HWND(-1), 0, 0, 0, 0, 0x13)        # 항상 위, 초점은 게임에 둔다
 
@@ -2450,12 +2457,19 @@ class Handler(BaseHTTPRequestHandler):
                 state['owner'], state['auto'] = int(q[2:]), False
             save_cfg()
             self._send(200, b'ok', 'text/plain')
-        elif path == '/bigalpha' and q.startswith('v=') and q[2:].isdigit():   # 큰 창 투명도 (30~100 %)
+        elif path == '/bigalpha' and q.startswith('v=') and q[2:].isdigit():   # 큰 창 진하기 (30~100 %)
             cfg['big_alpha'] = state['big_alpha'] = max(30, min(100, int(q[2:])))
             save_cfg()
             h = big_window()
             if big_shown(h):
                 big_show(h, True)
+            self._send(200, b'ok', 'text/plain')
+        elif path == '/bigdim' and q.startswith('v=') and q[2:].isdigit():   # 끌 때 흐리게 남기는 진하기 (0 = 완전히 숨김, 0~80 %)
+            cfg['big_dim'] = state['big_dim'] = max(0, min(80, int(q[2:])))
+            save_cfg()
+            h = big_window()
+            if h and not big_shown(h):          # 지금 꺼져 있으면 새 흐리기를 바로 보여 준다
+                big_show(h, False)
             self._send(200, b'ok', 'text/plain')
         elif path == '/refresh':                    # 게임에서 톱니바퀴 -> 유틸 갱신을 대신 누른다
             self._send(200, refresh_now(q == 'auto').encode(), 'text/plain; charset=utf-8')

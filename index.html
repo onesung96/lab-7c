@@ -954,6 +954,7 @@ function openSettings() {
     `<label><input type="checkbox" id="setAutoRefresh" ${srv.auto_refresh !== false ? 'checked' : ''}> 게임의 유틸 갱신을 알아서 누르기: 조합이 끝났을 때와 유닛 수치가 바뀌었을 때 톱니바퀴 → 유틸 갱신을 대신 눌러요 (마우스를 1초쯤 가져가요)</label>` +
     `<label><input type="checkbox" id="setStay" ${srv.stay !== false ? 'checked' : ''}> 조합이 끝나면 게임에 그대로 있기: 만든 유닛을 골라 두고 게임 위 큰 창은 닫아요 (끄면 누르던 창으로 돌아가요)</label>` +
     `<div style="margin-top:6px">게임 위 큰 창 여닫는 키 <select id="setBigKey">${['`', 'F1', 'F4', 'F5', 'F7', 'Insert', '마우스 옆버튼'].map(k => `<option${k === (srv.big_key || '마우스 옆버튼') ? ' selected' : ''}>${k}</option>`).join('')}</select> <span class="dim">(\` 는 숫자 1 왼쪽 키)</span> · 큰 창 진하기 <input id="setBigAlpha" type="range" min="30" max="100" step="5" value="${srv.big_alpha || 100}" style="vertical-align:middle;width:110px"> <span id="bigAlphaV">${srv.big_alpha || 100}%</span></div>` +
+    `<div class="dim" style="margin-top:4px">큰 창을 끄면 깜빡 끊기나요? 끌 때 완전히 숨기지 말고 흐리게 남겨 보세요 (게임이 비쳐 보이고 클릭은 게임으로 가요) · 끌 때 흐리기 <input id="setBigDim" type="range" min="0" max="80" step="5" value="${srv.big_dim || 0}" style="vertical-align:middle;width:110px"> <span id="bigDimV">${(srv.big_dim || 0) ? (srv.big_dim + '%') : '숨김'}</span></div>` +
     `<div class="dim" style="margin-top:4px">버전 ${esc(srv.version || '')}${srv.update ? ` · <a href="${esc(srv.update.url)}" target="_blank" style="color:var(--gold)">새 버전 ${esc(srv.update.ver)} 받기</a>` : ''} · 맵 ${esc(srv.map_version || '')}</div></div>` +
     (excluded.size ? `<div class="sec"><h4>추천에서 뺀 유닛 (누르면 되돌림)</h4>${[...excluded].filter(id => items[id]).map(id => `<button class="ibtn" data-ex="${id}" style="margin:2px">${esc(nm(id))} <span class="dim">${esc(items[id].grade.split(' ')[0])}</span> ↩</button>`).join('')}</div>` : '') +
     `<div class="sec"><h4>지난 판 기록 <button class="ibtn" data-act="csv" style="float:right">엑셀(CSV)로 저장</button></h4><div id="hstat"></div><div id="hist" class="dim">불러오는 중…</div></div>` +
@@ -1024,6 +1025,7 @@ document.addEventListener('change', e => {
   if (e.target.id === 'setVol') { vol = +e.target.value; store.set('vol', vol); ding(880, true); }
   if (e.target.id === 'setOs') { osNotify = e.target.checked; store.set('osNotify', osNotify); if (osNotify && 'Notification' in window) Notification.requestPermission(); }
   if (e.target.id === 'setBigAlpha') { $('bigAlphaV').textContent = e.target.value + '%'; srv.big_alpha = +e.target.value; fetch('/bigalpha?v=' + e.target.value); }
+  if (e.target.id === 'setBigDim') { $('bigDimV').textContent = +e.target.value ? e.target.value + '%' : '숨김'; srv.big_dim = +e.target.value; fetch('/bigdim?v=' + e.target.value); }
   if (e.target.id === 'setBigKey') fetch('/bigkey?k=' + encodeURIComponent(e.target.value)).then(() => { srv.big_key = e.target.value; toast('큰 창 여닫는 키: ' + e.target.value); });
   if (e.target.id === 'setStartup') fetch('/startup?on=' + (e.target.checked ? 1 : 0)).then(r => r.json()).then(j => { srv.startup = j.startup; toast(j.startup ? '윈도우 켤 때 자동으로 실행돼요' : '자동 실행을 껐어요'); });
   if (e.target.id === 'setAutoRefresh') { const on = e.target.checked; fetch('/autorefresh?v=' + (on ? 1 : 0)).then(() => { srv.auto_refresh = on; }); }
